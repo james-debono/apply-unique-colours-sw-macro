@@ -1,5 +1,9 @@
-' ApplyUniqueColorsToBodies Macro
-' Assigns a unique, evenly-spaced color to each body in the active SolidWorks part.
+' ApplyUniqueColorsToBodies Macro - Version 3
+' Assigns a unique, evenly-spaced color to each geometrically identical group of bodies or components.
+' V3 Features:
+' - Avoids reusing colors already applied to individual faces.
+' - Applies appearances at the component level for Assemblies.
+' - Applies appearances only to the active configuration.
 
 Dim swApp As SldWorks.SldWorks
 
@@ -10,19 +14,31 @@ Sub main()
     Set swModel = swApp.ActiveDoc
     
     If swModel Is Nothing Then
-        MsgBox "Please open a part document.", vbCritical
+        MsgBox "Please open a part or assembly document.", vbCritical
         Exit Sub
     End If
     
-    If swModel.GetType() <> swDocumentTypes_e.swDocPART Then
-        MsgBox "This macro only works on part documents.", vbCritical
+    Dim docType As Integer
+    docType = swModel.GetType()
+    
+    If docType = swDocumentTypes_e.swDocPART Then
+        ProcessPart swModel
+    ElseIf docType = swDocumentTypes_e.swDocASSEMBLY Then
+        ProcessAssembly swModel
+    Else
+        MsgBox "This macro only works on part or assembly documents.", vbCritical
         Exit Sub
     End If
     
+    ' Redraw the graphics area to display the new colors
+    swModel.GraphicsRedraw2
+End Sub
+
+' --- PART PROCESSING ---
+Sub ProcessPart(swModel As SldWorks.ModelDoc2)
     Dim swPart As SldWorks.PartDoc
     Set swPart = swModel
     
-    ' 0 represents swAllBodies enum value
     Dim vBodies As Variant
     vBodies = swPart.GetBodies2(0, False)
     
@@ -34,41 +50,330 @@ Sub main()
     Dim totalBodies As Integer
     totalBodies = UBound(vBodies) + 1
     
-    Dim i As Integer
-    Dim hueStep As Double
-    ' Distribute hues evenly across the 360 degree color wheel
-    hueStep = 360 / totalBodies
+    ' 1. Collect existing face colors to avoid
+    Dim excludedHues() As Double
+    Dim numExcludedHues As Integer
+    numExcludedHues = 0
+    ReDim excludedHues(1000) ' arbitrary initial size
     
-    For i = 0 To UBound(vBodies)
+    Dim i As Integer, j As Integer
+    For i = 0 To totalBodies - 1
         Dim swBody As SldWorks.Body2
         Set swBody = vBodies(i)
         
+        Dim vFaces As Variant
+        vFaces = swBody.GetFaces
+        If Not IsEmpty(vFaces) Then
+            For j = 0 To UBound(vFaces)
+                Dim swFace As SldWorks.Face2
+                Set swFace = vFaces(j)
+                
+                Dim vMat As Variant
+                vMat = swFace.MaterialPropertyValues
+                If IsArray(vMat) Then
+                    If UBound(vMat) >= 2 Then
+                        Dim r As Double, g As Double, b As Double
+                        r = vMat(0): g = vMat(1): b = vMat(2)
+                        Dim faceHue As Double
+                        faceHue = GetHSVHueFromRGB(r, g, b)
+                        
+                        If numExcludedHues >= UBound(excludedHues) Then
+                            ReDim Preserve excludedHues(UBound(excludedHues) + 1000)
+                        End If
+                        excludedHues(numExcludedHues) = faceHue
+                        numExcludedHues = numExcludedHues + 1
+                    End If
+                End If
+            Next j
+        End If
+    Next i
+    
+    ' 2. Group bodies geometrically
+    Dim numGroups As Integer
+    numGroups = 0
+    
+    Dim groupVolume() As Double
+    Dim groupArea() As Double
+    Dim groupFaceCount() As Long
+    
+    ReDim groupVolume(totalBodies)
+    ReDim groupArea(totalBodies)
+    ReDim groupFaceCount(totalBodies)
+    
+    Dim bodyGroup() As Integer
+    ReDim bodyGroup(totalBodies)
+    
+    For i = 0 To totalBodies - 1
+        Set swBody = vBodies(i)
+        
+        Dim vProps As Variant
+        vProps = swBody.GetMassProperties(1.0)
+        
+        Dim volume As Double, area As Double
+        Dim faceCount As Long
+        
+        If IsArray(vProps) Then
+            volume = vProps(3)
+            area = vProps(4)
+        Else
+            volume = 0
+            area = 0
+        End If
+        
+        faceCount = swBody.GetFaceCount
+        
+        Dim isMatch As Boolean
+        isMatch = False
+        Dim groupIndex As Integer
+        
+        For j = 0 To numGroups - 1
+            Dim volLimit As Double, areaLimit As Double
+            volLimit = Abs(groupVolume(j)) * 0.001 + 0.000000001
+            areaLimit = Abs(groupArea(j)) * 0.001 + 0.000000001
+            
+            If Abs(groupVolume(j) - volume) <= volLimit And Abs(groupArea(j) - area) <= areaLimit And groupFaceCount(j) = faceCount Then
+                isMatch = True
+                groupIndex = j
+                Exit For
+            End If
+        Next j
+        
+        If Not isMatch Then
+            groupVolume(numGroups) = volume
+            groupArea(numGroups) = area
+            groupFaceCount(numGroups) = faceCount
+            groupIndex = numGroups
+            numGroups = numGroups + 1
+        End If
+        
+        bodyGroup(i) = groupIndex
+    Next i
+    
+    ' 3. Generate Colors and Avoid Excluded
+    Dim groupHues() As Double
+    ReDim groupHues(numGroups)
+    
+    Dim hueStep As Double
+    If numGroups > 0 Then hueStep = 360 / numGroups Else hueStep = 0
+    
+    For i = 0 To numGroups - 1
+        Dim targetHue As Double
+        targetHue = i * hueStep
+        targetHue = FindSafeHue(targetHue, excludedHues, numExcludedHues)
+        groupHues(i) = targetHue
+    Next i
+    
+    ' 4. Apply Colors
+    ' Applying to body MaterialPropertyValues2 inherently targets the active configuration displays
+    For i = 0 To totalBodies - 1
+        Set swBody = vBodies(i)
+        
         Dim hue As Double
-        hue = i * hueStep
+        hue = groupHues(bodyGroup(i))
         
         Dim rgbArr As Variant
-        rgbArr = GetRGBFromHSV(hue, 1, 1) ' Full saturation and value
+        rgbArr = GetRGBFromHSV(hue, 1, 1)
         
-        ' SolidWorks MaterialPropertyValues2 expects an array of 9 doubles
         Dim dMatPrps(8) As Double
-        dMatPrps(0) = rgbArr(0) ' R
-        dMatPrps(1) = rgbArr(1) ' G
-        dMatPrps(2) = rgbArr(2) ' B
-        dMatPrps(3) = 1       ' Ambient
-        dMatPrps(4) = 1       ' Diffuse
-        dMatPrps(5) = 0.5     ' Specular
-        dMatPrps(6) = 0.3125  ' Shininess
-        dMatPrps(7) = 0       ' Transparency
-        dMatPrps(8) = 0       ' Emission
+        dMatPrps(0) = rgbArr(0)
+        dMatPrps(1) = rgbArr(1)
+        dMatPrps(2) = rgbArr(2)
+        dMatPrps(3) = 1
+        dMatPrps(4) = 1
+        dMatPrps(5) = 0.5
+        dMatPrps(6) = 0.3125
+        dMatPrps(7) = 0
+        dMatPrps(8) = 0
         
         swBody.MaterialPropertyValues2 = dMatPrps
-    Next
+    Next i
     
-    ' Redraw the graphics area to display the new colors
-    swModel.GraphicsRedraw2
-    
-    MsgBox "Successfully assigned unique colors to " & totalBodies & " bodies.", vbInformation
+    MsgBox "Assigned colors to " & totalBodies & " bodies (" & numGroups & " groups) in Part.", vbInformation
 End Sub
+
+' --- ASSEMBLY PROCESSING ---
+Sub ProcessAssembly(swModel As SldWorks.ModelDoc2)
+    Dim swAssy As SldWorks.AssemblyDoc
+    Set swAssy = swModel
+    
+    Dim vComps As Variant
+    vComps = swAssy.GetComponents(True) ' True = All components down assembly tree
+    
+    If IsEmpty(vComps) Then
+        MsgBox "No components found in the active assembly.", vbInformation
+        Exit Sub
+    End If
+    
+    Dim totalComps As Integer
+    totalComps = UBound(vComps) + 1
+    
+    ' 1. Collect existing component-level colors to avoid
+    Dim excludedHues() As Double
+    Dim numExcludedHues As Integer
+    numExcludedHues = 0
+    ReDim excludedHues(1000)
+    
+    Dim i As Integer, j As Integer
+    For i = 0 To totalComps - 1
+        Dim swComp As SldWorks.Component2
+        Set swComp = vComps(i)
+        
+        Dim vMat As Variant
+        vMat = swComp.MaterialPropertyValues
+        If IsArray(vMat) Then
+            If UBound(vMat) >= 2 Then
+                Dim r As Double, g As Double, b As Double
+                r = vMat(0): g = vMat(1): b = vMat(2)
+                Dim compHue As Double
+                compHue = GetHSVHueFromRGB(r, g, b)
+                
+                If numExcludedHues >= UBound(excludedHues) Then
+                    ReDim Preserve excludedHues(UBound(excludedHues) + 1000)
+                End If
+                excludedHues(numExcludedHues) = compHue
+                numExcludedHues = numExcludedHues + 1
+            End If
+        End If
+    Next i
+    
+    ' 2. Group components by Reference path (geometrically identical)
+    Dim numGroups As Integer
+    numGroups = 0
+    
+    Dim groupPaths() As String
+    ReDim groupPaths(totalComps)
+    
+    Dim compGroup() As Integer
+    ReDim compGroup(totalComps)
+    
+    For i = 0 To totalComps - 1
+        Set swComp = vComps(i)
+        
+        Dim path As String
+        path = LCase(swComp.GetPathName())
+        
+        Dim isMatch As Boolean
+        isMatch = False
+        Dim groupIndex As Integer
+        
+        For j = 0 To numGroups - 1
+            If groupPaths(j) = path Then
+                isMatch = True
+                groupIndex = j
+                Exit For
+            End If
+        Next j
+        
+        If Not isMatch Then
+            groupPaths(numGroups) = path
+            groupIndex = numGroups
+            numGroups = numGroups + 1
+        End If
+        
+        compGroup(i) = groupIndex
+    Next i
+    
+    ' 3. Generate Component Colors
+    Dim hueStep As Double
+    If numGroups > 0 Then hueStep = 360 / numGroups Else hueStep = 0
+    
+    Dim groupHues() As Double
+    ReDim groupHues(numGroups)
+    For i = 0 To numGroups - 1
+        Dim targetHue As Double
+        targetHue = i * hueStep
+        targetHue = FindSafeHue(targetHue, excludedHues, numExcludedHues)
+        groupHues(i) = targetHue
+    Next i
+    
+    ' 4. Apply Configuration-Specific Colors
+    For i = 0 To totalComps - 1
+        Set swComp = vComps(i)
+        
+        Dim hue As Double
+        hue = groupHues(compGroup(i))
+        
+        Dim rgbArr As Variant
+        rgbArr = GetRGBFromHSV(hue, 1, 1)
+        
+        Dim dMatPrps(8) As Double
+        dMatPrps(0) = rgbArr(0)
+        dMatPrps(1) = rgbArr(1)
+        dMatPrps(2) = rgbArr(2)
+        dMatPrps(3) = 1
+        dMatPrps(4) = 1
+        dMatPrps(5) = 0.5
+        dMatPrps(6) = 0.3125
+        dMatPrps(7) = 0
+        dMatPrps(8) = 0
+        
+        ' 1 = swThisConfiguration
+        swComp.SetMaterialPropertyValues2 dMatPrps, 1, Nothing
+    Next i
+    
+    MsgBox "Assigned colors to " & totalComps & " components (" & numGroups & " unique parts) in active configuration.", vbInformation
+End Sub
+
+' Function to find a safe hue that avoids excluded hues
+Function FindSafeHue(targetHue As Double, excludedHues() As Double, numExcludedHues As Integer) As Double
+    Dim safeHue As Double
+    safeHue = targetHue
+    
+    Dim isSafe As Boolean
+    Dim loops As Integer
+    loops = 0
+    
+    Do
+        isSafe = True
+        Dim i As Integer
+        For i = 0 To numExcludedHues - 1
+            Dim diff As Double
+            diff = Abs(safeHue - excludedHues(i))
+            ' Handle circular hue nature
+            If diff > 180 Then diff = Abs(360 - diff)
+            
+            ' If hue is within 10 degrees of an excluded hue, shift it
+            If diff < 10 Then
+                isSafe = False
+                safeHue = safeHue + 15
+                If safeHue >= 360 Then safeHue = safeHue - 360
+                Exit For
+            End If
+        Next i
+        
+        loops = loops + 1
+        If loops > 36 Then Exit Do ' Prevent infinite shifting (max 36 steps)
+    Loop Until isSafe
+    
+    FindSafeHue = safeHue
+End Function
+
+' Function to convert RGB to Hue (0-360)
+Function GetHSVHueFromRGB(R As Double, G As Double, B As Double) As Double
+    Dim maxVal As Double, minVal As Double, diff As Double
+    
+    maxVal = R
+    If G > maxVal Then maxVal = G
+    If B > maxVal Then maxVal = B
+    
+    minVal = R
+    If G < minVal Then minVal = G
+    If B < minVal Then minVal = B
+    
+    diff = maxVal - minVal
+    
+    If diff = 0 Then
+        GetHSVHueFromRGB = 0
+    ElseIf maxVal = R Then
+        Dim tempHueR As Double
+        tempHueR = (60 * ((G - B) / diff) + 360)
+        GetHSVHueFromRGB = tempHueR - 360 * Int(tempHueR / 360)
+    ElseIf maxVal = G Then
+        GetHSVHueFromRGB = (60 * ((B - R) / diff) + 120)
+    ElseIf maxVal = B Then
+        GetHSVHueFromRGB = (60 * ((R - G) / diff) + 240)
+    End If
+End Function
 
 ' Function to convert HSV color space to an array of RGB doubles (0.0 to 1.0)
 Function GetRGBFromHSV(H As Double, S As Double, V As Double) As Variant
