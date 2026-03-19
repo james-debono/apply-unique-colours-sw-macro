@@ -1,14 +1,14 @@
-' ApplyUniqueColorsToBodies Macro - Version 4
+' ApplyUniqueColorsToBodies Macro - Version 4.1
 ' Assigns a unique, highly distinguishable color to each geometrically identical group of bodies or components.
+' V4.1 Features:
+' - Explicitly enforces per-configuration color assignments to prevent appearances from bleeding across multiple configurations in both Parts and Assemblies.
 ' V4 Features:
-' - Uses Golden Angle algorithmic distribution for Hue to maximize contrast between sequentially discovered parts.
+' - Uses Golden Angle algorithmic distribution for Hue to maximize contrast.
 ' - Cycles Saturation and Value (Brightness) through 7 distinct aesthetic tones to massively increase the number of distinguishable colors.
 ' V3.1 Features:
 ' - In Assemblies, correctly skips subassemblies so that individual leaf parts receive the color safely.
 ' V3 Features:
 ' - Avoids reusing colors already applied to individual faces.
-' - Applies appearances at the component level for Assemblies.
-' - Applies appearances only to the active configuration.
 
 Dim swApp As SldWorks.SldWorks
 
@@ -59,7 +59,7 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
     Dim excludedHues() As Double
     Dim numExcludedHues As Integer
     numExcludedHues = 0
-    ReDim excludedHues(1000) ' arbitrary initial size
+    ReDim excludedHues(1000)
     
     Dim i As Integer, j As Integer
     For i = 0 To totalBodies - 1
@@ -160,7 +160,6 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
     
     For i = 0 To numGroups - 1
         Dim targetHue As Double
-        ' Golden angle distribution for maximal hue space contrast
         targetHue = (i * 137.50776)
         targetHue = targetHue - 360 * Int(targetHue / 360)
         
@@ -168,19 +167,27 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
         groupHues(i) = targetHue
     Next i
     
-    ' Define 7 unique Saturation / Value (Brightness) combinations to further separate colors
     Dim sVals(6) As Double
     Dim vVals(6) As Double
-    sVals(0) = 1.00: vVals(0) = 1.00 ' Bright
-    sVals(1) = 0.50: vVals(1) = 1.00 ' Pastel
-    sVals(2) = 1.00: vVals(2) = 0.50 ' Dark
-    sVals(3) = 0.50: vVals(3) = 0.60 ' Dark Pastel
-    sVals(4) = 0.75: vVals(4) = 0.75 ' Muted
-    sVals(5) = 1.00: vVals(5) = 0.75 ' Deep
-    sVals(6) = 0.75: vVals(6) = 1.00 ' Soft
+    sVals(0) = 1.00: vVals(0) = 1.00
+    sVals(1) = 0.50: vVals(1) = 1.00
+    sVals(2) = 1.00: vVals(2) = 0.50
+    sVals(3) = 0.50: vVals(3) = 0.60
+    sVals(4) = 0.75: vVals(4) = 0.75
+    sVals(5) = 1.00: vVals(5) = 0.75
+    sVals(6) = 0.75: vVals(6) = 1.00
     
-    ' 4. Apply Colors
-    ' Applying to body MaterialPropertyValues2 inherently targets the active configuration
+    ' Explicitly retrieve the active configuration string name
+    Dim configNames(0) As String
+    Dim swConfig As SldWorks.Configuration
+    Set swConfig = swModel.GetActiveConfiguration()
+    If Not swConfig Is Nothing Then
+        configNames(0) = swConfig.Name
+    Else
+        configNames(0) = "Default"
+    End If
+    
+    ' 4. Apply Colors explicitly targeting the single configuration
     For i = 0 To totalBodies - 1
         Set swBody = vBodies(i)
         
@@ -207,10 +214,24 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
         dMatPrps(7) = 0
         dMatPrps(8) = 0
         
-        swBody.MaterialPropertyValues2 = dMatPrps
+        Dim swEnt As SldWorks.Entity
+        Set swEnt = swBody
+        
+        ' Select the body to apply material via extension
+        swModel.ClearSelection2 True
+        If Not swEnt Is Nothing Then
+            If swEnt.Select4(False, Nothing) Then
+                ' 1 = swInConfigurationOpts_e.swThisConfiguration
+                swModel.Extension.SetMaterialPropertyValues dMatPrps, 1, configNames
+            Else
+                swBody.MaterialPropertyValues2 = dMatPrps
+            End If
+        Else
+            swBody.MaterialPropertyValues2 = dMatPrps
+        End If
     Next i
     
-    MsgBox "Assigned vibrant unique colors to " & totalBodies & " bodies (" & numGroups & " geometric groups) in Part.", vbInformation
+    MsgBox "Assigned vibrant unique colors to " & totalBodies & " bodies (" & numGroups & " geometric groups) in active configuration.", vbInformation
 End Sub
 
 ' --- ASSEMBLY PROCESSING ---
@@ -219,7 +240,7 @@ Sub ProcessAssembly(swModel As SldWorks.ModelDoc2)
     Set swAssy = swModel
     
     Dim vComps As Variant
-    vComps = swAssy.GetComponents(False) ' False (TopLevelOnly = False) gets ALL components down assembly tree
+    vComps = swAssy.GetComponents(False) 
     
     If IsEmpty(vComps) Then
         MsgBox "No components found in the active assembly.", vbInformation
@@ -243,7 +264,6 @@ Sub ProcessAssembly(swModel As SldWorks.ModelDoc2)
         Dim path As String
         path = LCase(swComp.GetPathName())
         
-        ' Only consider Leaf Part components
         If Right(path, 7) = ".sldprt" Then
             Dim vMat As Variant
             vMat = swComp.MaterialPropertyValues
@@ -282,7 +302,6 @@ Sub ProcessAssembly(swModel As SldWorks.ModelDoc2)
         
         path = LCase(swComp.GetPathName())
         
-        ' Only process Part components (ignore subassemblies to avoid overriding children)
         If Right(path, 7) = ".sldprt" Then
             Dim isMatch As Boolean
             isMatch = False
@@ -304,7 +323,7 @@ Sub ProcessAssembly(swModel As SldWorks.ModelDoc2)
             
             compGroup(i) = groupIndex
         Else
-            compGroup(i) = -1 ' Mark subassembly to be ignored
+            compGroup(i) = -1
             skippedComps = skippedComps + 1
         End If
     Next i
@@ -315,7 +334,6 @@ Sub ProcessAssembly(swModel As SldWorks.ModelDoc2)
     
     For i = 0 To numGroups - 1
         Dim targetHue As Double
-        ' Golden angle distribution
         targetHue = (i * 137.50776)
         targetHue = targetHue - 360 * Int(targetHue / 360)
         
@@ -323,7 +341,6 @@ Sub ProcessAssembly(swModel As SldWorks.ModelDoc2)
         groupHues(i) = targetHue
     Next i
     
-    ' Define 7 unique Saturation / Value (Brightness) combinations
     Dim sVals(6) As Double
     Dim vVals(6) As Double
     sVals(0) = 1.00: vVals(0) = 1.00
@@ -333,6 +350,16 @@ Sub ProcessAssembly(swModel As SldWorks.ModelDoc2)
     sVals(4) = 0.75: vVals(4) = 0.75
     sVals(5) = 1.00: vVals(5) = 0.75
     sVals(6) = 0.75: vVals(6) = 1.00
+    
+    ' Retrieve the active configuration string explicitly
+    Dim configNames(0) As String
+    Dim swConfig As SldWorks.Configuration
+    Set swConfig = swModel.GetActiveConfiguration()
+    If Not swConfig Is Nothing Then
+        configNames(0) = swConfig.Name
+    Else
+        configNames(0) = "Default"
+    End If
     
     ' 4. Apply Configuration-Specific Colors
     Dim coloredComps As Integer
@@ -365,13 +392,13 @@ Sub ProcessAssembly(swModel As SldWorks.ModelDoc2)
             dMatPrps(7) = 0
             dMatPrps(8) = 0
             
-            ' 1 = swThisConfiguration
-            swComp.SetMaterialPropertyValues2 dMatPrps, 1, Empty
+            ' Pass exactly 1 for swThisConfiguration and the array of config names
+            swComp.SetMaterialPropertyValues2 dMatPrps, 1, configNames
             coloredComps = coloredComps + 1
         End If
     Next i
     
-    MsgBox "Assigned vibrant unique colors to " & coloredComps & " components (" & numGroups & " parts) in active configuration." & vbCrLf & _
+    MsgBox "Assigned vibrant unique colors to " & coloredComps & " components (" & numGroups & " parts) explicitly in active configuration." & vbCrLf & _
            "Skipped " & skippedComps & " subassemblies.", vbInformation
 End Sub
 
