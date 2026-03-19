@@ -1,5 +1,7 @@
-' ApplyUniqueColorsToBodies Macro - Version 3
+' ApplyUniqueColorsToBodies Macro - Version 3.1
 ' Assigns a unique, evenly-spaced color to each geometrically identical group of bodies or components.
+' V3.1 Features:
+' - In Assemblies, correctly skips subassemblies so that individual leaf parts receive the color safely.
 ' V3 Features:
 ' - Avoids reusing colors already applied to individual faces.
 ' - Applies appearances at the component level for Assemblies.
@@ -113,7 +115,7 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
         Dim faceCount As Long
         
         If IsArray(vProps) Then
-            volume = vProps(3)
+            volume = vProps(3)            
             area = vProps(4)
         Else
             volume = 0
@@ -164,7 +166,7 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
     Next i
     
     ' 4. Apply Colors
-    ' Applying to body MaterialPropertyValues2 inherently targets the active configuration displays
+    ' Applying to body MaterialPropertyValues2 inherently targets the active configuration
     For i = 0 To totalBodies - 1
         Set swBody = vBodies(i)
         
@@ -197,7 +199,7 @@ Sub ProcessAssembly(swModel As SldWorks.ModelDoc2)
     Set swAssy = swModel
     
     Dim vComps As Variant
-    vComps = swAssy.GetComponents(True) ' True = All components down assembly tree
+    vComps = swAssy.GetComponents(False) ' False (TopLevelOnly = False) gets ALL components down assembly tree
     
     If IsEmpty(vComps) Then
         MsgBox "No components found in the active assembly.", vbInformation
@@ -218,20 +220,26 @@ Sub ProcessAssembly(swModel As SldWorks.ModelDoc2)
         Dim swComp As SldWorks.Component2
         Set swComp = vComps(i)
         
-        Dim vMat As Variant
-        vMat = swComp.MaterialPropertyValues
-        If IsArray(vMat) Then
-            If UBound(vMat) >= 2 Then
-                Dim r As Double, g As Double, b As Double
-                r = vMat(0): g = vMat(1): b = vMat(2)
-                Dim compHue As Double
-                compHue = GetHSVHueFromRGB(r, g, b)
-                
-                If numExcludedHues >= UBound(excludedHues) Then
-                    ReDim Preserve excludedHues(UBound(excludedHues) + 1000)
+        Dim path As String
+        path = LCase(swComp.GetPathName())
+        
+        ' Only consider Leaf Part components
+        If Right(path, 7) = ".sldprt" Then
+            Dim vMat As Variant
+            vMat = swComp.MaterialPropertyValues
+            If IsArray(vMat) Then
+                If UBound(vMat) >= 2 Then
+                    Dim r As Double, g As Double, b As Double
+                    r = vMat(0): g = vMat(1): b = vMat(2)
+                    Dim compHue As Double
+                    compHue = GetHSVHueFromRGB(r, g, b)
+                    
+                    If numExcludedHues >= UBound(excludedHues) Then
+                        ReDim Preserve excludedHues(UBound(excludedHues) + 1000)
+                    End If
+                    excludedHues(numExcludedHues) = compHue
+                    numExcludedHues = numExcludedHues + 1
                 End If
-                excludedHues(numExcludedHues) = compHue
-                numExcludedHues = numExcludedHues + 1
             End If
         End If
     Next i
@@ -246,31 +254,39 @@ Sub ProcessAssembly(swModel As SldWorks.ModelDoc2)
     Dim compGroup() As Integer
     ReDim compGroup(totalComps)
     
+    Dim skippedComps As Integer
+    skippedComps = 0
+    
     For i = 0 To totalComps - 1
         Set swComp = vComps(i)
         
-        Dim path As String
         path = LCase(swComp.GetPathName())
         
-        Dim isMatch As Boolean
-        isMatch = False
-        Dim groupIndex As Integer
-        
-        For j = 0 To numGroups - 1
-            If groupPaths(j) = path Then
-                isMatch = True
-                groupIndex = j
-                Exit For
+        ' Only process Part components (ignore subassemblies to avoid overriding children)
+        If Right(path, 7) = ".sldprt" Then
+            Dim isMatch As Boolean
+            isMatch = False
+            Dim groupIndex As Integer
+            
+            For j = 0 To numGroups - 1
+                If groupPaths(j) = path Then
+                    isMatch = True
+                    groupIndex = j
+                    Exit For
+                End If
+            Next j
+            
+            If Not isMatch Then
+                groupPaths(numGroups) = path
+                groupIndex = numGroups
+                numGroups = numGroups + 1
             End If
-        Next j
-        
-        If Not isMatch Then
-            groupPaths(numGroups) = path
-            groupIndex = numGroups
-            numGroups = numGroups + 1
+            
+            compGroup(i) = groupIndex
+        Else
+            compGroup(i) = -1 ' Mark subassembly to be ignored
+            skippedComps = skippedComps + 1
         End If
-        
-        compGroup(i) = groupIndex
     Next i
     
     ' 3. Generate Component Colors
@@ -287,31 +303,38 @@ Sub ProcessAssembly(swModel As SldWorks.ModelDoc2)
     Next i
     
     ' 4. Apply Configuration-Specific Colors
+    Dim coloredComps As Integer
+    coloredComps = 0
+    
     For i = 0 To totalComps - 1
         Set swComp = vComps(i)
         
-        Dim hue As Double
-        hue = groupHues(compGroup(i))
-        
-        Dim rgbArr As Variant
-        rgbArr = GetRGBFromHSV(hue, 1, 1)
-        
-        Dim dMatPrps(8) As Double
-        dMatPrps(0) = rgbArr(0)
-        dMatPrps(1) = rgbArr(1)
-        dMatPrps(2) = rgbArr(2)
-        dMatPrps(3) = 1
-        dMatPrps(4) = 1
-        dMatPrps(5) = 0.5
-        dMatPrps(6) = 0.3125
-        dMatPrps(7) = 0
-        dMatPrps(8) = 0
-        
-        ' 1 = swThisConfiguration
-        swComp.SetMaterialPropertyValues2 dMatPrps, 1, Nothing
+        If compGroup(i) >= 0 Then
+            Dim hue As Double
+            hue = groupHues(compGroup(i))
+            
+            Dim rgbArr As Variant
+            rgbArr = GetRGBFromHSV(hue, 1, 1)
+            
+            Dim dMatPrps(8) As Double
+            dMatPrps(0) = rgbArr(0)
+            dMatPrps(1) = rgbArr(1)
+            dMatPrps(2) = rgbArr(2)
+            dMatPrps(3) = 1
+            dMatPrps(4) = 1
+            dMatPrps(5) = 0.5
+            dMatPrps(6) = 0.3125
+            dMatPrps(7) = 0
+            dMatPrps(8) = 0
+            
+            ' 1 = swThisConfiguration
+            swComp.SetMaterialPropertyValues2 dMatPrps, 1, Empty
+            coloredComps = coloredComps + 1
+        End If
     Next i
     
-    MsgBox "Assigned colors to " & totalComps & " components (" & numGroups & " unique parts) in active configuration.", vbInformation
+    MsgBox "Assigned colors to " & coloredComps & " components (" & numGroups & " unique parts) in active configuration." & vbCrLf & _
+           "Skipped " & skippedComps & " subassemblies.", vbInformation
 End Sub
 
 ' Function to find a safe hue that avoids excluded hues
