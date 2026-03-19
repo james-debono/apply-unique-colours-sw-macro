@@ -1,14 +1,13 @@
-' ApplyUniqueColorsToBodies Macro - Version 4.1
+' ApplyUniqueColorsToBodies Macro - Version 4.2
 ' Assigns a unique, highly distinguishable color to each geometrically identical group of bodies or components.
+' V4.2 Features:
+' - Resolves silent macro failures caused by VBA variant type mismatches.
+' - Rigidly enforces per-configuration assignments using exact configuration names and the swSpecifyConfiguration constant (3).
 ' V4.1 Features:
-' - Explicitly enforces per-configuration color assignments to prevent appearances from bleeding across multiple configurations in both Parts and Assemblies.
+' - Explicitly enforces per-configuration color assignments to prevent appearances from bleeding across multiple configurations.
 ' V4 Features:
 ' - Uses Golden Angle algorithmic distribution for Hue to maximize contrast.
-' - Cycles Saturation and Value (Brightness) through 7 distinct aesthetic tones to massively increase the number of distinguishable colors.
-' V3.1 Features:
-' - In Assemblies, correctly skips subassemblies so that individual leaf parts receive the color safely.
-' V3 Features:
-' - Avoids reusing colors already applied to individual faces.
+' - Cycles Saturation and Value (Brightness) through 7 distinct aesthetic tones.
 
 Dim swApp As SldWorks.SldWorks
 
@@ -42,9 +41,24 @@ End Sub
 ' --- PART PROCESSING ---
 Sub ProcessPart(swModel As SldWorks.ModelDoc2)
     Dim swPart As SldWorks.PartDoc
-    Set swPart = swModel
-    
     Dim vBodies As Variant
+    Dim totalBodies As Integer
+    Dim excludedHues() As Double
+    Dim numExcludedHues As Integer
+    Dim i As Integer, j As Integer
+    Dim numGroups As Integer
+    Dim groupVolume() As Double
+    Dim groupArea() As Double
+    Dim groupFaceCount() As Long
+    Dim bodyGroup() As Integer
+    Dim groupHues() As Double
+    Dim sVals(6) As Double
+    Dim vVals(6) As Double
+    Dim sNames(0) As String
+    Dim vConfigNames As Variant
+    Dim swConfig As Object
+    
+    Set swPart = swModel
     vBodies = swPart.GetBodies2(0, False)
     
     If IsEmpty(vBodies) Then
@@ -52,16 +66,12 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
         Exit Sub
     End If
     
-    Dim totalBodies As Integer
     totalBodies = UBound(vBodies) + 1
     
     ' 1. Collect existing face colors to avoid
-    Dim excludedHues() As Double
-    Dim numExcludedHues As Integer
     numExcludedHues = 0
     ReDim excludedHues(1000)
     
-    Dim i As Integer, j As Integer
     For i = 0 To totalBodies - 1
         Dim swBody As SldWorks.Body2
         Set swBody = vBodies(i)
@@ -94,18 +104,11 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
     Next i
     
     ' 2. Group bodies geometrically
-    Dim numGroups As Integer
     numGroups = 0
-    
-    Dim groupVolume() As Double
-    Dim groupArea() As Double
-    Dim groupFaceCount() As Long
     
     ReDim groupVolume(totalBodies)
     ReDim groupArea(totalBodies)
     ReDim groupFaceCount(totalBodies)
-    
-    Dim bodyGroup() As Integer
     ReDim bodyGroup(totalBodies)
     
     For i = 0 To totalBodies - 1
@@ -155,7 +158,6 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
     Next i
     
     ' 3. Generate Colors and Avoid Excluded
-    Dim groupHues() As Double
     If numGroups > 0 Then ReDim groupHues(numGroups - 1)
     
     For i = 0 To numGroups - 1
@@ -167,8 +169,6 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
         groupHues(i) = targetHue
     Next i
     
-    Dim sVals(6) As Double
-    Dim vVals(6) As Double
     sVals(0) = 1.00: vVals(0) = 1.00
     sVals(1) = 0.50: vVals(1) = 1.00
     sVals(2) = 1.00: vVals(2) = 0.50
@@ -177,15 +177,15 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
     sVals(5) = 1.00: vVals(5) = 0.75
     sVals(6) = 0.75: vVals(6) = 1.00
     
-    ' Explicitly retrieve the active configuration string name
-    Dim configNames(0) As String
-    Dim swConfig As SldWorks.Configuration
+    ' Safely extract the literal string name of the active configuration
     Set swConfig = swModel.GetActiveConfiguration()
     If Not swConfig Is Nothing Then
-        configNames(0) = swConfig.Name
+        sNames(0) = swConfig.Name
     Else
-        configNames(0) = "Default"
+        sNames(0) = "Default"
     End If
+    ' Force conversion to a Variant array for strict API typing constraints
+    vConfigNames = sNames
     
     ' 4. Apply Colors explicitly targeting the single configuration
     For i = 0 To totalBodies - 1
@@ -214,20 +214,22 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
         dMatPrps(7) = 0
         dMatPrps(8) = 0
         
+        Dim vMatPrps As Variant
+        vMatPrps = dMatPrps
+        
         Dim swEnt As SldWorks.Entity
         Set swEnt = swBody
         
-        ' Select the body to apply material via extension
         swModel.ClearSelection2 True
         If Not swEnt Is Nothing Then
             If swEnt.Select4(False, Nothing) Then
-                ' 1 = swInConfigurationOpts_e.swThisConfiguration
-                swModel.Extension.SetMaterialPropertyValues dMatPrps, 1, configNames
+                ' 3 = swSpecifyConfiguration
+                swModel.Extension.SetMaterialPropertyValues vMatPrps, 3, vConfigNames
             Else
-                swBody.MaterialPropertyValues2 = dMatPrps
+                swBody.MaterialPropertyValues2 = vMatPrps
             End If
         Else
-            swBody.MaterialPropertyValues2 = dMatPrps
+            swBody.MaterialPropertyValues2 = vMatPrps
         End If
     Next i
     
@@ -237,9 +239,24 @@ End Sub
 ' --- ASSEMBLY PROCESSING ---
 Sub ProcessAssembly(swModel As SldWorks.ModelDoc2)
     Dim swAssy As SldWorks.AssemblyDoc
-    Set swAssy = swModel
-    
     Dim vComps As Variant
+    Dim totalComps As Integer
+    Dim excludedHues() As Double
+    Dim numExcludedHues As Integer
+    Dim i As Integer, j As Integer
+    Dim numGroups As Integer
+    Dim groupPaths() As String
+    Dim compGroup() As Integer
+    Dim skippedComps As Integer
+    Dim groupHues() As Double
+    Dim sVals(6) As Double
+    Dim vVals(6) As Double
+    Dim sNames(0) As String
+    Dim vConfigNames As Variant
+    Dim swConfig As Object
+    Dim coloredComps As Integer
+    
+    Set swAssy = swModel
     vComps = swAssy.GetComponents(False) 
     
     If IsEmpty(vComps) Then
@@ -247,16 +264,12 @@ Sub ProcessAssembly(swModel As SldWorks.ModelDoc2)
         Exit Sub
     End If
     
-    Dim totalComps As Integer
     totalComps = UBound(vComps) + 1
     
     ' 1. Collect existing component-level colors to avoid
-    Dim excludedHues() As Double
-    Dim numExcludedHues As Integer
     numExcludedHues = 0
     ReDim excludedHues(1000)
     
-    Dim i As Integer, j As Integer
     For i = 0 To totalComps - 1
         Dim swComp As SldWorks.Component2
         Set swComp = vComps(i)
@@ -284,22 +297,14 @@ Sub ProcessAssembly(swModel As SldWorks.ModelDoc2)
         End If
     Next i
     
-    ' 2. Group components by Reference path (geometrically identical)
-    Dim numGroups As Integer
+    ' 2. Group components by Reference path
     numGroups = 0
-    
-    Dim groupPaths() As String
     ReDim groupPaths(totalComps)
-    
-    Dim compGroup() As Integer
     ReDim compGroup(totalComps)
-    
-    Dim skippedComps As Integer
     skippedComps = 0
     
     For i = 0 To totalComps - 1
         Set swComp = vComps(i)
-        
         path = LCase(swComp.GetPathName())
         
         If Right(path, 7) = ".sldprt" Then
@@ -329,7 +334,6 @@ Sub ProcessAssembly(swModel As SldWorks.ModelDoc2)
     Next i
     
     ' 3. Generate Component Colors
-    Dim groupHues() As Double
     If numGroups > 0 Then ReDim groupHues(numGroups - 1)
     
     For i = 0 To numGroups - 1
@@ -341,8 +345,6 @@ Sub ProcessAssembly(swModel As SldWorks.ModelDoc2)
         groupHues(i) = targetHue
     Next i
     
-    Dim sVals(6) As Double
-    Dim vVals(6) As Double
     sVals(0) = 1.00: vVals(0) = 1.00
     sVals(1) = 0.50: vVals(1) = 1.00
     sVals(2) = 1.00: vVals(2) = 0.50
@@ -351,18 +353,17 @@ Sub ProcessAssembly(swModel As SldWorks.ModelDoc2)
     sVals(5) = 1.00: vVals(5) = 0.75
     sVals(6) = 0.75: vVals(6) = 1.00
     
-    ' Retrieve the active configuration string explicitly
-    Dim configNames(0) As String
-    Dim swConfig As SldWorks.Configuration
+    ' Extract the active configuration string representation
     Set swConfig = swModel.GetActiveConfiguration()
     If Not swConfig Is Nothing Then
-        configNames(0) = swConfig.Name
+        sNames(0) = swConfig.Name
     Else
-        configNames(0) = "Default"
+        sNames(0) = "Default"
     End If
+    ' Force conversion to Variant array
+    vConfigNames = sNames
     
     ' 4. Apply Configuration-Specific Colors
-    Dim coloredComps As Integer
     coloredComps = 0
     
     For i = 0 To totalComps - 1
@@ -392,8 +393,11 @@ Sub ProcessAssembly(swModel As SldWorks.ModelDoc2)
             dMatPrps(7) = 0
             dMatPrps(8) = 0
             
-            ' Pass exactly 1 for swThisConfiguration and the array of config names
-            swComp.SetMaterialPropertyValues2 dMatPrps, 1, configNames
+            Dim vMatPrps As Variant
+            vMatPrps = dMatPrps
+            
+            ' 3 = swSpecifyConfiguration
+            swComp.SetMaterialPropertyValues2 vMatPrps, 3, vConfigNames
             coloredComps = coloredComps + 1
         End If
     Next i
@@ -420,7 +424,6 @@ Function FindSafeHue(targetHue As Double, excludedHues() As Double, numExcludedH
             ' Handle circular hue nature
             If diff > 180 Then diff = Abs(360 - diff)
             
-            ' If hue is within 10 degrees of an excluded hue, shift it
             If diff < 10 Then
                 isSafe = False
                 safeHue = safeHue + 15
@@ -430,7 +433,7 @@ Function FindSafeHue(targetHue As Double, excludedHues() As Double, numExcludedH
         Next i
         
         loops = loops + 1
-        If loops > 36 Then Exit Do ' Prevent infinite shifting (max 36 steps)
+        If loops > 36 Then Exit Do
     Loop Until isSafe
     
     FindSafeHue = safeHue
