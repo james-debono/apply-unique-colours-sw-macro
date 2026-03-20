@@ -1,7 +1,11 @@
-' ApplyUniqueColorsToBodies Macro - Version 4.5
+' ApplyUniqueColorsToBodies Macro - Version 4.6
 ' Assigns a unique, highly distinguishable color to each geometrically identical group of bodies or components.
 '
 ' --- FULL CHANGELOG ---
+' V4.6 Features:
+' - Resolves fatal COM Disconnect/Automation errors (-2147417848) caused by Late-Bound Variant casting in Display State access.
+' - Enforces strictly-typed Long ENUMs and Early-Bound interfaces for DisplayStateSetting.
+'
 ' V4.5 Features:
 ' - Natively targets the specific ACTIVE DISPLAY STATE using the DisplayStateSetting API.
 ' - Resolves color bleeding between display states linked to a single configuration.
@@ -216,10 +220,17 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
     sVals(6) = 0.75: vVals(6) = 1.00
     
     currentStep = "Configuring Display State Targets"
-    Dim swDispStateSetts As Object
-    ' 1 = swThisDisplayState. We strictly lock changes only to the active UI Display State!
-    Set swDispStateSetts = swModel.Extension.GetDisplayStateSetting(1)
-    swDispStateSetts.Option = 1
+    ' Use Strict Early-Binding and Long Enums to prevent Automation disconnects (-2147417848)
+    Dim swDispStateSetts As SldWorks.DisplayStateSetting
+    Set swDispStateSetts = swModel.Extension.GetDisplayStateSetting(swDisplayStateOpts_e.swThisDisplayState)
+    
+    ' If the API fundamentally crashes here, it means this exact SLDWORKS version completely rejects DisplayStateSetting on Parts
+    If swDispStateSetts Is Nothing Then
+        MsgBox "SolidWorks failed to generate a Display State Setting for this Body.", vbInformation
+        Exit Sub
+    End If
+    
+    swDispStateSetts.Option = swDisplayStateOpts_e.swThisDisplayState
     
     currentStep = "Applying Colors to Bodies via Display States"
     For i = 0 To totalBodies - 1
@@ -238,7 +249,7 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
         rgbArr = GetRGBFromHSV(hue, sVals(svIdx), vVals(svIdx))
         
         currentStep = "Injecting Specific Display State Appearance"
-        Dim entities(0) As Object
+        Dim entities(0) As Object ' Must be array of generic objects per COM specification
         Set entities(0) = swBody
         swDispStateSetts.Entities = entities
         
@@ -246,7 +257,7 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
         vAppearances = swModel.Extension.DisplayStateSpecMaterialPropertyValues(swDispStateSetts)
         
         If Not IsEmpty(vAppearances) Then
-            Dim appearSet As Object
+            Dim appearSet As SldWorks.AppearanceSetting
             Set appearSet = vAppearances(0)
             
             ' Apply properties directly to the native appearance override object
@@ -255,7 +266,7 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
             appearSet.Specular = 0.5
             appearSet.Luminous = 0#
             
-            Dim newAppearances(0) As Object
+            Dim newAppearances(0) As SldWorks.AppearanceSetting
             Set newAppearances(0) = appearSet
             
             ' Push changes strictly locked to the Active Display State
@@ -401,10 +412,9 @@ Sub ProcessAssembly(swModel As SldWorks.ModelDoc2)
     sVals(6) = 0.75: vVals(6) = 1.00
     
     currentStep = "Configuring Display State Targets"
-    Dim swDispStateSetts As Object
-    ' 1 = swThisDisplayState
-    Set swDispStateSetts = swModel.Extension.GetDisplayStateSetting(1)
-    swDispStateSetts.Option = 1
+    Dim swDispStateSetts As SldWorks.DisplayStateSetting
+    Set swDispStateSetts = swModel.Extension.GetDisplayStateSetting(swDisplayStateOpts_e.swThisDisplayState)
+    swDispStateSetts.Option = swDisplayStateOpts_e.swThisDisplayState
     swDispStateSetts.PartLevel = False ' Critical: Only override at the Assembly level!
     
     currentStep = "Applying Component Material Properties via Display States"
@@ -435,7 +445,7 @@ Sub ProcessAssembly(swModel As SldWorks.ModelDoc2)
             vAppearances = swModel.Extension.DisplayStateSpecMaterialPropertyValues(swDispStateSetts)
             
             If Not IsEmpty(vAppearances) Then
-                Dim appearSet As Object
+                Dim appearSet As SldWorks.AppearanceSetting
                 Set appearSet = vAppearances(0)
                 
                 appearSet.Color = RGB(Int(rgbArr(0) * 255), Int(rgbArr(1) * 255), Int(rgbArr(2) * 255))
@@ -443,7 +453,7 @@ Sub ProcessAssembly(swModel As SldWorks.ModelDoc2)
                 appearSet.Specular = 0.5
                 appearSet.Luminous = 0#
                 
-                Dim newAppearances(0) As Object
+                Dim newAppearances(0) As SldWorks.AppearanceSetting
                 Set newAppearances(0) = appearSet
                 
                 swModel.Extension.DisplayStateSpecMaterialPropertyValues(swDispStateSetts) = newAppearances
@@ -454,7 +464,6 @@ Sub ProcessAssembly(swModel As SldWorks.ModelDoc2)
                 dMatPrps(1) = rgbArr(1)
                 dMatPrps(2) = rgbArr(2)
                 dMatPrps(3) = 1: dMatPrps(4) = 1: dMatPrps(5) = 0.5: dMatPrps(6) = 0.3125: dMatPrps(7) = 0: dMatPrps(8) = 0
-                ' 1 = swThisConfiguration
                 swComp.SetMaterialPropertyValues2 dMatPrps, 1, Empty
             End If
             
