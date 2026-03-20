@@ -1,17 +1,40 @@
-' ApplyUniqueColorsToBodies Macro - Version 4.2
+' ApplyUniqueColorsToBodies Macro - Version 4.3
 ' Assigns a unique, highly distinguishable color to each geometrically identical group of bodies or components.
+'
+' --- FULL CHANGELOG ---
+' V4.3 Features:
+' - Granular Error Telemetry with detailed step tracing.
+' - Preventative Null Reference (Nothing) COM Interface fixes.
+'
 ' V4.2 Features:
-' - Resolves silent macro failures caused by VBA variant type mismatches.
-' - Rigidly enforces per-configuration assignments using exact configuration names and the swSpecifyConfiguration constant (3).
+' - Type Mismatch Fix for SolidWorks Variant matrices.
+' - Strict SpecifyConfiguration targeting via API constants.
+'
 ' V4.1 Features:
-' - Explicitly enforces per-configuration color assignments to prevent appearances from bleeding across multiple configurations.
-' V4 Features:
-' - Uses Golden Angle algorithmic distribution for Hue to maximize contrast.
-' - Cycles Saturation and Value (Brightness) through 7 distinct aesthetic tones.
+' - Hardened Per-Configuration Targeting array fixes to prevent bleeding.
+'
+' V4.0 Features:
+' - Maximized Visual Contrast using Golden Angle distribution.
+' - Complex 7-Stage Saturation & Brightness Variations for thousands of hues.
+'
+' V3.1 Features:
+' - Exclusive Subassembly filtering for deepest-level parts.
+'
+' V3.0 Features:
+' - Face Appearance override checks to prevent accidental body collisions.
+' - Assembly Level Support grouping via path identifiers.
+'
+' V2.0 Features:
+' - Geometric Pattern Grouping (Volume, Area, Face Count).
+'
+' V1.0 Features:
+' - Base sequential HSV generation.
 
 Dim swApp As SldWorks.SldWorks
 
 Sub main()
+    On Error GoTo mainError
+    
     Set swApp = Application.SldWorks
     
     Dim swModel As SldWorks.ModelDoc2
@@ -36,10 +59,18 @@ Sub main()
     
     ' Redraw the graphics area to display the new colors
     swModel.GraphicsRedraw2
+    Exit Sub
+    
+mainError:
+    MsgBox "An error occurred in main(): " & Err.Description & " (Error " & Err.Number & ")", vbCritical
 End Sub
 
 ' --- PART PROCESSING ---
 Sub ProcessPart(swModel As SldWorks.ModelDoc2)
+    Dim currentStep As String
+    On Error GoTo ErrorHandler
+    
+    currentStep = "Initializing Variables"
     Dim swPart As SldWorks.PartDoc
     Dim vBodies As Variant
     Dim totalBodies As Integer
@@ -54,10 +85,21 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
     Dim groupHues() As Double
     Dim sVals(6) As Double
     Dim vVals(6) As Double
-    Dim sNames(0) As String
-    Dim vConfigNames As Variant
-    Dim swConfig As Object
     
+    ' Safely setup configuration string arrays
+    currentStep = "Fetching Active Configuration"
+    Dim vConfigNames As Variant
+    Dim sNames(0) As String
+    Dim swConfig As Object
+    Set swConfig = swModel.GetActiveConfiguration()
+    If Not swConfig Is Nothing Then
+        sNames(0) = swConfig.Name
+    Else
+        sNames(0) = "Default"
+    End If
+    vConfigNames = sNames
+    
+    currentStep = "Loading Bodies"
     Set swPart = swModel
     vBodies = swPart.GetBodies2(0, False)
     
@@ -68,7 +110,7 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
     
     totalBodies = UBound(vBodies) + 1
     
-    ' 1. Collect existing face colors to avoid
+    currentStep = "Collecting Excluded Face Colors"
     numExcludedHues = 0
     ReDim excludedHues(1000)
     
@@ -103,7 +145,7 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
         End If
     Next i
     
-    ' 2. Group bodies geometrically
+    currentStep = "Grouping Bodies"
     numGroups = 0
     
     ReDim groupVolume(totalBodies)
@@ -157,7 +199,7 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
         bodyGroup(i) = groupIndex
     Next i
     
-    ' 3. Generate Colors and Avoid Excluded
+    currentStep = "Generating Unique Colors"
     If numGroups > 0 Then ReDim groupHues(numGroups - 1)
     
     For i = 0 To numGroups - 1
@@ -177,17 +219,14 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
     sVals(5) = 1.00: vVals(5) = 0.75
     sVals(6) = 0.75: vVals(6) = 1.00
     
-    ' Safely extract the literal string name of the active configuration
-    Set swConfig = swModel.GetActiveConfiguration()
-    If Not swConfig Is Nothing Then
-        sNames(0) = swConfig.Name
-    Else
-        sNames(0) = "Default"
-    End If
-    ' Force conversion to a Variant array for strict API typing constraints
-    vConfigNames = sNames
+    ' Select Data Generator ensures we never pass a Null pointer to the selection routines
+    Dim swSelMgr As SldWorks.SelectionMgr
+    Set swSelMgr = swModel.SelectionManager
+    Dim swSelData As Object
+    Set swSelData = swSelMgr.CreateSelectData
     
     ' 4. Apply Colors explicitly targeting the single configuration
+    currentStep = "Applying Colors to Bodies"
     For i = 0 To totalBodies - 1
         Set swBody = vBodies(i)
         
@@ -217,12 +256,14 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
         Dim vMatPrps As Variant
         vMatPrps = dMatPrps
         
-        Dim swEnt As SldWorks.Entity
+        currentStep = "Selecting Body via Object Late-Binding"
+        Dim swEnt As Object
         Set swEnt = swBody
         
         swModel.ClearSelection2 True
         If Not swEnt Is Nothing Then
-            If swEnt.Select4(False, Nothing) Then
+            currentStep = "Executing Explicit Extension Material Property"
+            If swEnt.Select4(False, swSelData) Then
                 ' 3 = swSpecifyConfiguration
                 swModel.Extension.SetMaterialPropertyValues vMatPrps, 3, vConfigNames
             Else
@@ -234,10 +275,21 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
     Next i
     
     MsgBox "Assigned vibrant unique colors to " & totalBodies & " bodies (" & numGroups & " geometric groups) in active configuration.", vbInformation
+    Exit Sub
+    
+ErrorHandler:
+    MsgBox "ERROR in ProcessPart at step [" & currentStep & "]" & vbCrLf & _
+           "Description: " & Err.Description & vbCrLf & _
+           "Error " & Err.Number & vbCrLf & _
+           "Please let the developer know where it stopped.", vbCritical
 End Sub
 
 ' --- ASSEMBLY PROCESSING ---
 Sub ProcessAssembly(swModel As SldWorks.ModelDoc2)
+    Dim currentStep As String
+    On Error GoTo ErrorHandler
+    
+    currentStep = "Initializing Variables"
     Dim swAssy As SldWorks.AssemblyDoc
     Dim vComps As Variant
     Dim totalComps As Integer
@@ -251,11 +303,21 @@ Sub ProcessAssembly(swModel As SldWorks.ModelDoc2)
     Dim groupHues() As Double
     Dim sVals(6) As Double
     Dim vVals(6) As Double
-    Dim sNames(0) As String
-    Dim vConfigNames As Variant
-    Dim swConfig As Object
     Dim coloredComps As Integer
     
+    currentStep = "Fetching Active Configuration"
+    Dim vConfigNames As Variant
+    Dim sNames(0) As String
+    Dim swConfig As Object
+    Set swConfig = swModel.GetActiveConfiguration()
+    If Not swConfig Is Nothing Then
+        sNames(0) = swConfig.Name
+    Else
+        sNames(0) = "Default"
+    End If
+    vConfigNames = sNames
+    
+    currentStep = "Loading Components"
     Set swAssy = swModel
     vComps = swAssy.GetComponents(False) 
     
@@ -266,7 +328,7 @@ Sub ProcessAssembly(swModel As SldWorks.ModelDoc2)
     
     totalComps = UBound(vComps) + 1
     
-    ' 1. Collect existing component-level colors to avoid
+    currentStep = "Collecting Component Extents"
     numExcludedHues = 0
     ReDim excludedHues(1000)
     
@@ -297,7 +359,7 @@ Sub ProcessAssembly(swModel As SldWorks.ModelDoc2)
         End If
     Next i
     
-    ' 2. Group components by Reference path
+    currentStep = "Grouping Components"
     numGroups = 0
     ReDim groupPaths(totalComps)
     ReDim compGroup(totalComps)
@@ -333,7 +395,7 @@ Sub ProcessAssembly(swModel As SldWorks.ModelDoc2)
         End If
     Next i
     
-    ' 3. Generate Component Colors
+    currentStep = "Generating Colors"
     If numGroups > 0 Then ReDim groupHues(numGroups - 1)
     
     For i = 0 To numGroups - 1
@@ -353,17 +415,7 @@ Sub ProcessAssembly(swModel As SldWorks.ModelDoc2)
     sVals(5) = 1.00: vVals(5) = 0.75
     sVals(6) = 0.75: vVals(6) = 1.00
     
-    ' Extract the active configuration string representation
-    Set swConfig = swModel.GetActiveConfiguration()
-    If Not swConfig Is Nothing Then
-        sNames(0) = swConfig.Name
-    Else
-        sNames(0) = "Default"
-    End If
-    ' Force conversion to Variant array
-    vConfigNames = sNames
-    
-    ' 4. Apply Configuration-Specific Colors
+    currentStep = "Applying Component Material Properties"
     coloredComps = 0
     
     For i = 0 To totalComps - 1
@@ -397,13 +449,22 @@ Sub ProcessAssembly(swModel As SldWorks.ModelDoc2)
             vMatPrps = dMatPrps
             
             ' 3 = swSpecifyConfiguration
+            currentStep = "Setting Component Property Values"
             swComp.SetMaterialPropertyValues2 vMatPrps, 3, vConfigNames
             coloredComps = coloredComps + 1
         End If
     Next i
     
+    currentStep = "Routine Completed"
     MsgBox "Assigned vibrant unique colors to " & coloredComps & " components (" & numGroups & " parts) explicitly in active configuration." & vbCrLf & _
            "Skipped " & skippedComps & " subassemblies.", vbInformation
+    Exit Sub
+    
+ErrorHandler:
+    MsgBox "ERROR in ProcessAssembly at step [" & currentStep & "]" & vbCrLf & _
+           "Description: " & Err.Description & vbCrLf & _
+           "Error " & Err.Number & vbCrLf & _
+           "Please let the developer know where it stopped.", vbCritical
 End Sub
 
 ' Function to find a safe hue that avoids excluded hues
@@ -474,7 +535,6 @@ Function GetRGBFromHSV(H As Double, S As Double, V As Double) As Variant
     
     C = V * S
     H_prime = H / 60
-    ' Calculate X with VBA robust modulo for floats
     X = C * (1 - Abs((H_prime - 2 * Int(H_prime / 2)) - 1))
     
     If H_prime >= 0 And H_prime < 1 Then
