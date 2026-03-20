@@ -1,7 +1,11 @@
-' ApplyUniqueColorsToBodies Macro - Version 4.3
+' ApplyUniqueColorsToBodies Macro - Version 4.4
 ' Assigns a unique, highly distinguishable color to each geometrically identical group of bodies or components.
 '
 ' --- FULL CHANGELOG ---
+' V4.4 Features:
+' - Eliminated standard Entity.Select4 COM Selection Errors.
+' - String-Based Entity Selection using raw SelectByID2.
+'
 ' V4.3 Features:
 ' - Granular Error Telemetry with detailed step tracing.
 ' - Preventative Null Reference (Nothing) COM Interface fixes.
@@ -86,7 +90,6 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
     Dim sVals(6) As Double
     Dim vVals(6) As Double
     
-    ' Safely setup configuration string arrays
     currentStep = "Fetching Active Configuration"
     Dim vConfigNames As Variant
     Dim sNames(0) As String
@@ -219,13 +222,7 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
     sVals(5) = 1.00: vVals(5) = 0.75
     sVals(6) = 0.75: vVals(6) = 1.00
     
-    ' Select Data Generator ensures we never pass a Null pointer to the selection routines
-    Dim swSelMgr As SldWorks.SelectionMgr
-    Set swSelMgr = swModel.SelectionManager
-    Dim swSelData As Object
-    Set swSelData = swSelMgr.CreateSelectData
-    
-    ' 4. Apply Colors explicitly targeting the single configuration
+    ' 4. Apply Colors
     currentStep = "Applying Colors to Bodies"
     For i = 0 To totalBodies - 1
         Set swBody = vBodies(i)
@@ -256,20 +253,22 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
         Dim vMatPrps As Variant
         vMatPrps = dMatPrps
         
-        currentStep = "Selecting Body via Object Late-Binding"
-        Dim swEnt As Object
-        Set swEnt = swBody
-        
+        currentStep = "Selecting Body via SelectByID2"
         swModel.ClearSelection2 True
-        If Not swEnt Is Nothing Then
-            currentStep = "Executing Explicit Extension Material Property"
-            If swEnt.Select4(False, swSelData) Then
-                ' 3 = swSpecifyConfiguration
-                swModel.Extension.SetMaterialPropertyValues vMatPrps, 3, vConfigNames
-            Else
-                swBody.MaterialPropertyValues2 = vMatPrps
-            End If
+        Dim bRet As Boolean
+        
+        ' Select the exact body via its internal name, bypasses COM casting requirements
+        bRet = swModel.Extension.SelectByID2(swBody.Name, "SOLIDBODY", 0, 0, 0, False, 0, Nothing, 0)
+        If Not bRet Then
+            bRet = swModel.Extension.SelectByID2(swBody.Name, "SURFACEBODY", 0, 0, 0, False, 0, Nothing, 0)
+        End If
+        
+        currentStep = "Executing Explicit Extension Material Property"
+        If bRet Then
+            ' 3 = swSpecifyConfiguration
+            swModel.Extension.SetMaterialPropertyValues vMatPrps, 3, vConfigNames
         Else
+            ' Fallback if selection fails for some reason
             swBody.MaterialPropertyValues2 = vMatPrps
         End If
     Next i
@@ -482,7 +481,6 @@ Function FindSafeHue(targetHue As Double, excludedHues() As Double, numExcludedH
         For i = 0 To numExcludedHues - 1
             Dim diff As Double
             diff = Abs(safeHue - excludedHues(i))
-            ' Handle circular hue nature
             If diff > 180 Then diff = Abs(360 - diff)
             
             If diff < 10 Then
