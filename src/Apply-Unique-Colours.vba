@@ -1,7 +1,12 @@
-' ApplyUniqueColorsToBodies Macro - Version 4.4
+' ApplyUniqueColorsToBodies Macro - Version 4.5
 ' Assigns a unique, highly distinguishable color to each geometrically identical group of bodies or components.
 '
 ' --- FULL CHANGELOG ---
+' V4.5 Features:
+' - Natively targets the specific ACTIVE DISPLAY STATE using the DisplayStateSetting API.
+' - Resolves color bleeding between display states linked to a single configuration.
+' - Completely bypasses unstable selection commands (SelectByID2, Select4).
+'
 ' V4.4 Features:
 ' - Eliminated standard Entity.Select4 COM Selection Errors.
 ' - String-Based Entity Selection using raw SelectByID2.
@@ -89,18 +94,6 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
     Dim groupHues() As Double
     Dim sVals(6) As Double
     Dim vVals(6) As Double
-    
-    currentStep = "Fetching Active Configuration"
-    Dim vConfigNames As Variant
-    Dim sNames(0) As String
-    Dim swConfig As Object
-    Set swConfig = swModel.GetActiveConfiguration()
-    If Not swConfig Is Nothing Then
-        sNames(0) = swConfig.Name
-    Else
-        sNames(0) = "Default"
-    End If
-    vConfigNames = sNames
     
     currentStep = "Loading Bodies"
     Set swPart = swModel
@@ -222,8 +215,13 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
     sVals(5) = 1.00: vVals(5) = 0.75
     sVals(6) = 0.75: vVals(6) = 1.00
     
-    ' 4. Apply Colors
-    currentStep = "Applying Colors to Bodies"
+    currentStep = "Configuring Display State Targets"
+    Dim swDispStateSetts As Object
+    ' 1 = swThisDisplayState. We strictly lock changes only to the active UI Display State!
+    Set swDispStateSetts = swModel.Extension.GetDisplayStateSetting(1)
+    swDispStateSetts.Option = 1
+    
+    currentStep = "Applying Colors to Bodies via Display States"
     For i = 0 To totalBodies - 1
         Set swBody = vBodies(i)
         
@@ -239,41 +237,41 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
         Dim rgbArr As Variant
         rgbArr = GetRGBFromHSV(hue, sVals(svIdx), vVals(svIdx))
         
-        Dim dMatPrps(8) As Double
-        dMatPrps(0) = rgbArr(0)
-        dMatPrps(1) = rgbArr(1)
-        dMatPrps(2) = rgbArr(2)
-        dMatPrps(3) = 1
-        dMatPrps(4) = 1
-        dMatPrps(5) = 0.5
-        dMatPrps(6) = 0.3125
-        dMatPrps(7) = 0
-        dMatPrps(8) = 0
+        currentStep = "Injecting Specific Display State Appearance"
+        Dim entities(0) As Object
+        Set entities(0) = swBody
+        swDispStateSetts.Entities = entities
         
-        Dim vMatPrps As Variant
-        vMatPrps = dMatPrps
+        Dim vAppearances As Variant
+        vAppearances = swModel.Extension.DisplayStateSpecMaterialPropertyValues(swDispStateSetts)
         
-        currentStep = "Selecting Body via SelectByID2"
-        swModel.ClearSelection2 True
-        Dim bRet As Boolean
-        
-        ' Select the exact body via its internal name, bypasses COM casting requirements
-        bRet = swModel.Extension.SelectByID2(swBody.Name, "SOLIDBODY", 0, 0, 0, False, 0, Nothing, 0)
-        If Not bRet Then
-            bRet = swModel.Extension.SelectByID2(swBody.Name, "SURFACEBODY", 0, 0, 0, False, 0, Nothing, 0)
-        End If
-        
-        currentStep = "Executing Explicit Extension Material Property"
-        If bRet Then
-            ' 3 = swSpecifyConfiguration
-            swModel.Extension.SetMaterialPropertyValues vMatPrps, 3, vConfigNames
+        If Not IsEmpty(vAppearances) Then
+            Dim appearSet As Object
+            Set appearSet = vAppearances(0)
+            
+            ' Apply properties directly to the native appearance override object
+            appearSet.Color = RGB(Int(rgbArr(0) * 255), Int(rgbArr(1) * 255), Int(rgbArr(2) * 255))
+            appearSet.Diffuse = 1#
+            appearSet.Specular = 0.5
+            appearSet.Luminous = 0#
+            
+            Dim newAppearances(0) As Object
+            Set newAppearances(0) = appearSet
+            
+            ' Push changes strictly locked to the Active Display State
+            swModel.Extension.DisplayStateSpecMaterialPropertyValues(swDispStateSetts) = newAppearances
         Else
-            ' Fallback if selection fails for some reason
-            swBody.MaterialPropertyValues2 = vMatPrps
+            ' Absolute Fallback if no appearance was inherited
+            Dim dMatPrps(8) As Double
+            dMatPrps(0) = rgbArr(0)
+            dMatPrps(1) = rgbArr(1)
+            dMatPrps(2) = rgbArr(2)
+            dMatPrps(3) = 1: dMatPrps(4) = 1: dMatPrps(5) = 0.5: dMatPrps(6) = 0.3125: dMatPrps(7) = 0: dMatPrps(8) = 0
+            swBody.MaterialPropertyValues2 = dMatPrps
         End If
     Next i
     
-    MsgBox "Assigned vibrant unique colors to " & totalBodies & " bodies (" & numGroups & " geometric groups) in active configuration.", vbInformation
+    MsgBox "Assigned vibrant unique colors to " & totalBodies & " bodies (" & numGroups & " geometric groups) exclusively in active Display State.", vbInformation
     Exit Sub
     
 ErrorHandler:
@@ -303,18 +301,6 @@ Sub ProcessAssembly(swModel As SldWorks.ModelDoc2)
     Dim sVals(6) As Double
     Dim vVals(6) As Double
     Dim coloredComps As Integer
-    
-    currentStep = "Fetching Active Configuration"
-    Dim vConfigNames As Variant
-    Dim sNames(0) As String
-    Dim swConfig As Object
-    Set swConfig = swModel.GetActiveConfiguration()
-    If Not swConfig Is Nothing Then
-        sNames(0) = swConfig.Name
-    Else
-        sNames(0) = "Default"
-    End If
-    vConfigNames = sNames
     
     currentStep = "Loading Components"
     Set swAssy = swModel
@@ -414,7 +400,14 @@ Sub ProcessAssembly(swModel As SldWorks.ModelDoc2)
     sVals(5) = 1.00: vVals(5) = 0.75
     sVals(6) = 0.75: vVals(6) = 1.00
     
-    currentStep = "Applying Component Material Properties"
+    currentStep = "Configuring Display State Targets"
+    Dim swDispStateSetts As Object
+    ' 1 = swThisDisplayState
+    Set swDispStateSetts = swModel.Extension.GetDisplayStateSetting(1)
+    swDispStateSetts.Option = 1
+    swDispStateSetts.PartLevel = False ' Critical: Only override at the Assembly level!
+    
+    currentStep = "Applying Component Material Properties via Display States"
     coloredComps = 0
     
     For i = 0 To totalComps - 1
@@ -433,29 +426,44 @@ Sub ProcessAssembly(swModel As SldWorks.ModelDoc2)
             Dim rgbArr As Variant
             rgbArr = GetRGBFromHSV(hue, sVals(svIdx), vVals(svIdx))
             
-            Dim dMatPrps(8) As Double
-            dMatPrps(0) = rgbArr(0)
-            dMatPrps(1) = rgbArr(1)
-            dMatPrps(2) = rgbArr(2)
-            dMatPrps(3) = 1
-            dMatPrps(4) = 1
-            dMatPrps(5) = 0.5
-            dMatPrps(6) = 0.3125
-            dMatPrps(7) = 0
-            dMatPrps(8) = 0
+            currentStep = "Injecting Specific Display State Appearance for Component"
+            Dim entities(0) As Object
+            Set entities(0) = swComp
+            swDispStateSetts.Entities = entities
             
-            Dim vMatPrps As Variant
-            vMatPrps = dMatPrps
+            Dim vAppearances As Variant
+            vAppearances = swModel.Extension.DisplayStateSpecMaterialPropertyValues(swDispStateSetts)
             
-            ' 3 = swSpecifyConfiguration
-            currentStep = "Setting Component Property Values"
-            swComp.SetMaterialPropertyValues2 vMatPrps, 3, vConfigNames
+            If Not IsEmpty(vAppearances) Then
+                Dim appearSet As Object
+                Set appearSet = vAppearances(0)
+                
+                appearSet.Color = RGB(Int(rgbArr(0) * 255), Int(rgbArr(1) * 255), Int(rgbArr(2) * 255))
+                appearSet.Diffuse = 1#
+                appearSet.Specular = 0.5
+                appearSet.Luminous = 0#
+                
+                Dim newAppearances(0) As Object
+                Set newAppearances(0) = appearSet
+                
+                swModel.Extension.DisplayStateSpecMaterialPropertyValues(swDispStateSetts) = newAppearances
+            Else
+                ' Absolute Fallback
+                Dim dMatPrps(8) As Double
+                dMatPrps(0) = rgbArr(0)
+                dMatPrps(1) = rgbArr(1)
+                dMatPrps(2) = rgbArr(2)
+                dMatPrps(3) = 1: dMatPrps(4) = 1: dMatPrps(5) = 0.5: dMatPrps(6) = 0.3125: dMatPrps(7) = 0: dMatPrps(8) = 0
+                ' 1 = swThisConfiguration
+                swComp.SetMaterialPropertyValues2 dMatPrps, 1, Empty
+            End If
+            
             coloredComps = coloredComps + 1
         End If
     Next i
     
     currentStep = "Routine Completed"
-    MsgBox "Assigned vibrant unique colors to " & coloredComps & " components (" & numGroups & " parts) explicitly in active configuration." & vbCrLf & _
+    MsgBox "Assigned vibrant unique colors to " & coloredComps & " components (" & numGroups & " parts) exclusively in active Display State." & vbCrLf & _
            "Skipped " & skippedComps & " subassemblies.", vbInformation
     Exit Sub
     
