@@ -1,13 +1,17 @@
-' ApplyUniqueColorsToBodies Macro - Version 4.8
+' ApplyUniqueColorsToBodies Macro - Version 4.9
 ' Assigns a unique, highly distinguishable color to each geometrically identical group of bodies or components.
 '
 ' --- FULL CHANGELOG ---
+' V4.9 Features:
+' - Embedded MassProperty sub-typing fix: Overhauled physics extraction down from IMassProperty2 to baseline IMassProperty.
+' - Rigidized Variant array marshalling for AddBodies to fix Error 438 strictly on older backwards-compatible SolidWorks hosts.
+'
 ' V4.8 Features:
 ' - Adaptive Equidistant Color Generation: Replaces Golden Angle algorithm with pre-calculated equidistant hue spacing.
 ' - Dynamic S/V Layering: Part count perfectly scales and weaves Hues across 7 distinct Saturation/Brightness (Value) profiles to eliminate shading collisions.
 '
 ' V4.7 Features:
-' - Embedded Principal Moments of Inertia via IMassProperty2 natively into the structural geometry tracking to lock-down part coordinates.
+' - Embedded Principal Moments of Inertia via IMassProperty natively into the structural geometry tracking to lock-down part coordinates.
 ' - Sorts Px, Py, Pz vectors natively to guarantee absolute geometric distinction (even on plates with matching area/volume).
 '
 ' V4.6 Features:
@@ -167,8 +171,8 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
     ReDim groupM3(totalBodies)
     ReDim bodyGroup(totalBodies)
     
-    Dim swMassProp As SldWorks.MassProperty2
-    Set swMassProp = swModel.Extension.CreateMassProperty2
+    Dim swMassProp As SldWorks.MassProperty
+    Set swMassProp = swModel.Extension.CreateMassProperty
     
     For i = 0 To totalBodies - 1
         Set swBody = vBodies(i)
@@ -184,9 +188,15 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
         End If
         faceCount = swBody.GetFaceCount
         
-        Dim bArr(0) As Object
+        Dim bArr(0) As SldWorks.Body2
         Set bArr(0) = swBody
-        swMassProp.AddBodies bArr
+        
+        Dim vBodiesArr As Variant
+        vBodiesArr = bArr
+        
+        Dim bRet As Boolean
+        bRet = swMassProp.AddBodies(vBodiesArr)
+        
         Dim pMoments As Variant
         pMoments = swMassProp.PrincipalMomentsOfInertia
         
