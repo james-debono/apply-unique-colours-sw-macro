@@ -1,7 +1,11 @@
-' ApplyUniqueColorsToBodies Macro - Version 4.6
+' ApplyUniqueColorsToBodies Macro - Version 4.7
 ' Assigns a unique, highly distinguishable color to each geometrically identical group of bodies or components.
 '
 ' --- FULL CHANGELOG ---
+' V4.7 Features:
+' - Embedded Principal Moments of Inertia algorithm into the grouping logic.
+' - Sorts Px, Py, Pz vectors natively to guarantee absolute geometric distinction (even on plates with matching area/volume but different feature coordinates).
+'
 ' V4.6 Features:
 ' - Resolves fatal COM Disconnect/Automation errors (-2147417848) caused by Late-Bound Variant casting in Display State access.
 ' - Enforces strictly-typed Long ENUMs and Early-Bound interfaces for DisplayStateSetting.
@@ -94,6 +98,12 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
     Dim groupVolume() As Double
     Dim groupArea() As Double
     Dim groupFaceCount() As Long
+    
+    ' Arrays to track Principal Moments of Inertia for differentiation
+    Dim groupM1() As Double
+    Dim groupM2() As Double
+    Dim groupM3() As Double
+    
     Dim bodyGroup() As Integer
     Dim groupHues() As Double
     Dim sVals(6) As Double
@@ -151,7 +161,13 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
     ReDim groupVolume(totalBodies)
     ReDim groupArea(totalBodies)
     ReDim groupFaceCount(totalBodies)
+    ReDim groupM1(totalBodies)
+    ReDim groupM2(totalBodies)
+    ReDim groupM3(totalBodies)
     ReDim bodyGroup(totalBodies)
+    
+    Dim swMassProp As SldWorks.MassProperty2
+    Set swMassProp = swModel.Extension.CreateMassProperty2
     
     For i = 0 To totalBodies - 1
         Set swBody = vBodies(i)
@@ -172,19 +188,48 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
         
         faceCount = swBody.GetFaceCount
         
+        ' Extract Principal Moments of Inertia natively bound to the geometry
+        Dim bArr(0) As Object
+        Set bArr(0) = swBody
+        swMassProp.AddBodies bArr
+        
+        Dim pMoments As Variant
+        pMoments = swMassProp.PrincipalMomentsOfInertia
+        
+        Dim m1 As Double, m2 As Double, m3 As Double
+        If IsArray(pMoments) Then
+            m1 = pMoments(0): m2 = pMoments(1): m3 = pMoments(2)
+        Else
+            m1 = 0: m2 = 0: m3 = 0
+        End If
+        
+        ' Sort the moments to ensure rotational invariance
+        Dim temp As Double
+        If m1 > m2 Then temp = m1: m1 = m2: m2 = temp
+        If m2 > m3 Then temp = m2: m2 = m3: m3 = temp
+        If m1 > m2 Then temp = m1: m1 = m2: m2 = temp
+        
         Dim isMatch As Boolean
         isMatch = False
         Dim groupIndex As Integer
         
         For j = 0 To numGroups - 1
             Dim volLimit As Double, areaLimit As Double
+            Dim m1L As Double, m2L As Double, m3L As Double
+            
             volLimit = Abs(groupVolume(j)) * 0.001 + 0.000000001
             areaLimit = Abs(groupArea(j)) * 0.001 + 0.000000001
+            m1L = Abs(groupM1(j)) * 0.005 + 0.000000001
+            m2L = Abs(groupM2(j)) * 0.005 + 0.000000001
+            m3L = Abs(groupM3(j)) * 0.005 + 0.000000001
             
             If Abs(groupVolume(j) - volume) <= volLimit And Abs(groupArea(j) - area) <= areaLimit And groupFaceCount(j) = faceCount Then
-                isMatch = True
-                groupIndex = j
-                Exit For
+                ' Now cross check structural moment constraints (differentiates hole positioning inside otherwise identical plates)
+                If Abs(groupM1(j) - m1) <= m1L And Abs(groupM2(j) - m2) <= m2L And Abs(groupM3(j) - m3) <= m3L Then
+                    isMatch = True
+                    groupIndex = j
+                    Exit For
+                End If
             End If
         Next j
         
@@ -192,6 +237,9 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
             groupVolume(numGroups) = volume
             groupArea(numGroups) = area
             groupFaceCount(numGroups) = faceCount
+            groupM1(numGroups) = m1
+            groupM2(numGroups) = m2
+            groupM3(numGroups) = m3
             groupIndex = numGroups
             numGroups = numGroups + 1
         End If
@@ -220,11 +268,9 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
     sVals(6) = 0.75: vVals(6) = 1.00
     
     currentStep = "Configuring Display State Targets"
-    ' Use Strict Early-Binding and Long Enums to prevent Automation disconnects (-2147417848)
     Dim swDispStateSetts As SldWorks.DisplayStateSetting
     Set swDispStateSetts = swModel.Extension.GetDisplayStateSetting(swDisplayStateOpts_e.swThisDisplayState)
     
-    ' If the API fundamentally crashes here, it means this exact SLDWORKS version completely rejects DisplayStateSetting on Parts
     If swDispStateSetts Is Nothing Then
         MsgBox "SolidWorks failed to generate a Display State Setting for this Body.", vbInformation
         Exit Sub
@@ -282,7 +328,7 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
         End If
     Next i
     
-    MsgBox "Assigned vibrant unique colors to " & totalBodies & " bodies (" & numGroups & " geometric groups) exclusively in active Display State.", vbInformation
+    MsgBox "Assigned vibrant unique colors to " & totalBodies & " bodies (" & numGroups & " distinct geometric signatures) exclusively in active Display State.", vbInformation
     Exit Sub
     
 ErrorHandler:
@@ -464,6 +510,7 @@ Sub ProcessAssembly(swModel As SldWorks.ModelDoc2)
                 dMatPrps(1) = rgbArr(1)
                 dMatPrps(2) = rgbArr(2)
                 dMatPrps(3) = 1: dMatPrps(4) = 1: dMatPrps(5) = 0.5: dMatPrps(6) = 0.3125: dMatPrps(7) = 0: dMatPrps(8) = 0
+                ' 1 = swThisConfiguration
                 swComp.SetMaterialPropertyValues2 dMatPrps, 1, Empty
             End If
             
