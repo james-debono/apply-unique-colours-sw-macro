@@ -1,10 +1,14 @@
-' ApplyUniqueColorsToBodies Macro - Version 4.7
+' ApplyUniqueColorsToBodies Macro - Version 4.8
 ' Assigns a unique, highly distinguishable color to each geometrically identical group of bodies or components.
 '
 ' --- FULL CHANGELOG ---
+' V4.8 Features:
+' - Adaptive Equidistant Color Generation: Replaces Golden Angle algorithm with pre-calculated equidistant hue spacing.
+' - Dynamic S/V Layering: Part count perfectly scales and weaves Hues across 7 distinct Saturation/Brightness (Value) profiles to eliminate shading collisions.
+'
 ' V4.7 Features:
-' - Embedded Principal Moments of Inertia algorithm into the grouping logic.
-' - Sorts Px, Py, Pz vectors natively to guarantee absolute geometric distinction (even on plates with matching area/volume but different feature coordinates).
+' - Embedded Principal Moments of Inertia via IMassProperty2 natively into the structural geometry tracking to lock-down part coordinates.
+' - Sorts Px, Py, Pz vectors natively to guarantee absolute geometric distinction (even on plates with matching area/volume).
 '
 ' V4.6 Features:
 ' - Resolves fatal COM Disconnect/Automation errors (-2147417848) caused by Late-Bound Variant casting in Display State access.
@@ -99,15 +103,12 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
     Dim groupArea() As Double
     Dim groupFaceCount() As Long
     
-    ' Arrays to track Principal Moments of Inertia for differentiation
     Dim groupM1() As Double
     Dim groupM2() As Double
     Dim groupM3() As Double
     
     Dim bodyGroup() As Integer
     Dim groupHues() As Double
-    Dim sVals(6) As Double
-    Dim vVals(6) As Double
     
     currentStep = "Loading Bodies"
     Set swPart = swModel
@@ -171,28 +172,21 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
     
     For i = 0 To totalBodies - 1
         Set swBody = vBodies(i)
-        
         Dim vProps As Variant
         vProps = swBody.GetMassProperties(1.0)
         
-        Dim volume As Double, area As Double
-        Dim faceCount As Long
-        
+        Dim volume As Double, area As Double, faceCount As Long
         If IsArray(vProps) Then
             volume = vProps(3)            
             area = vProps(4)
         Else
-            volume = 0
-            area = 0
+            volume = 0: area = 0
         End If
-        
         faceCount = swBody.GetFaceCount
         
-        ' Extract Principal Moments of Inertia natively bound to the geometry
         Dim bArr(0) As Object
         Set bArr(0) = swBody
         swMassProp.AddBodies bArr
-        
         Dim pMoments As Variant
         pMoments = swMassProp.PrincipalMomentsOfInertia
         
@@ -203,7 +197,6 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
             m1 = 0: m2 = 0: m3 = 0
         End If
         
-        ' Sort the moments to ensure rotational invariance
         Dim temp As Double
         If m1 > m2 Then temp = m1: m1 = m2: m2 = temp
         If m2 > m3 Then temp = m2: m2 = m3: m3 = temp
@@ -224,7 +217,6 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
             m3L = Abs(groupM3(j)) * 0.005 + 0.000000001
             
             If Abs(groupVolume(j) - volume) <= volLimit And Abs(groupArea(j) - area) <= areaLimit And groupFaceCount(j) = faceCount Then
-                ' Now cross check structural moment constraints (differentiates hole positioning inside otherwise identical plates)
                 If Abs(groupM1(j) - m1) <= m1L And Abs(groupM2(j) - m2) <= m2L And Abs(groupM3(j) - m3) <= m3L Then
                     isMatch = True
                     groupIndex = j
@@ -247,25 +239,60 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
         bodyGroup(i) = groupIndex
     Next i
     
-    currentStep = "Generating Unique Colors"
+    currentStep = "Generating Unique Colors (Adaptive Equidistant)"
+    
+    Dim totalLayers As Integer
+    Dim itemsPerLayer As Integer
+    If numGroups <= 21 Then
+        totalLayers = 1
+        itemsPerLayer = numGroups
+    Else
+        totalLayers = Int((numGroups - 1) / 21) + 1
+        If totalLayers > 7 Then totalLayers = 7
+        itemsPerLayer = Int((numGroups - 1) / totalLayers) + 1
+    End If
+    
     If numGroups > 0 Then ReDim groupHues(numGroups - 1)
     
     For i = 0 To numGroups - 1
-        Dim targetHue As Double
-        targetHue = (i * 137.50776)
-        targetHue = targetHue - 360 * Int(targetHue / 360)
+        Dim layerIdx As Integer
+        layerIdx = Int(i / itemsPerLayer)
         
+        Dim indexInLayer As Integer
+        indexInLayer = i Mod itemsPerLayer
+        
+        Dim currentLayerItems As Integer
+        If layerIdx = totalLayers - 1 Then
+            currentLayerItems = numGroups - (layerIdx * itemsPerLayer)
+        Else
+            currentLayerItems = itemsPerLayer
+        End If
+        
+        Dim targetHue As Double
+        If currentLayerItems > 1 Then
+            targetHue = (indexInLayer * (360# / currentLayerItems))
+            
+            Dim offset As Double
+            offset = (360# / currentLayerItems) / totalLayers
+            targetHue = targetHue + (layerIdx * offset)
+        Else
+            targetHue = layerIdx * 45
+        End If
+        
+        If targetHue >= 360 Then targetHue = targetHue - 360 * Int(targetHue / 360)
         targetHue = FindSafeHue(targetHue, excludedHues, numExcludedHues)
         groupHues(i) = targetHue
     Next i
     
-    sVals(0) = 1.00: vVals(0) = 1.00
-    sVals(1) = 0.50: vVals(1) = 1.00
-    sVals(2) = 1.00: vVals(2) = 0.50
-    sVals(3) = 0.50: vVals(3) = 0.60
-    sVals(4) = 0.75: vVals(4) = 0.75
-    sVals(5) = 1.00: vVals(5) = 0.75
-    sVals(6) = 0.75: vVals(6) = 1.00
+    Dim sVals(6) As Double
+    Dim vVals(6) As Double
+    sVals(0) = 1.00: vVals(0) = 1.00 ' Bright
+    sVals(1) = 0.45: vVals(1) = 1.00 ' Pastel
+    sVals(2) = 1.00: vVals(2) = 0.50 ' Dark
+    sVals(3) = 0.20: vVals(3) = 0.90 ' Pale
+    sVals(4) = 0.60: vVals(4) = 1.00 ' Soft
+    sVals(5) = 0.85: vVals(5) = 0.70 ' Muted
+    sVals(6) = 1.00: vVals(6) = 0.35 ' Very Dark
     
     currentStep = "Configuring Display State Targets"
     Dim swDispStateSetts As SldWorks.DisplayStateSetting
@@ -288,14 +315,14 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
         Dim hue As Double
         hue = groupHues(grpIdx)
         
-        Dim svIdx As Integer
-        svIdx = grpIdx Mod 7
+        Dim lIdx As Integer
+        lIdx = Int(grpIdx / itemsPerLayer)
+        If lIdx > 6 Then lIdx = 6
         
         Dim rgbArr As Variant
-        rgbArr = GetRGBFromHSV(hue, sVals(svIdx), vVals(svIdx))
+        rgbArr = GetRGBFromHSV(hue, sVals(lIdx), vVals(lIdx))
         
-        currentStep = "Injecting Specific Display State Appearance"
-        Dim entities(0) As Object ' Must be array of generic objects per COM specification
+        Dim entities(0) As Object 
         Set entities(0) = swBody
         swDispStateSetts.Entities = entities
         
@@ -306,7 +333,6 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
             Dim appearSet As SldWorks.AppearanceSetting
             Set appearSet = vAppearances(0)
             
-            ' Apply properties directly to the native appearance override object
             appearSet.Color = RGB(Int(rgbArr(0) * 255), Int(rgbArr(1) * 255), Int(rgbArr(2) * 255))
             appearSet.Diffuse = 1#
             appearSet.Specular = 0.5
@@ -315,20 +341,16 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
             Dim newAppearances(0) As SldWorks.AppearanceSetting
             Set newAppearances(0) = appearSet
             
-            ' Push changes strictly locked to the Active Display State
             swModel.Extension.DisplayStateSpecMaterialPropertyValues(swDispStateSetts) = newAppearances
         Else
-            ' Absolute Fallback if no appearance was inherited
             Dim dMatPrps(8) As Double
-            dMatPrps(0) = rgbArr(0)
-            dMatPrps(1) = rgbArr(1)
-            dMatPrps(2) = rgbArr(2)
+            dMatPrps(0) = rgbArr(0): dMatPrps(1) = rgbArr(1): dMatPrps(2) = rgbArr(2)
             dMatPrps(3) = 1: dMatPrps(4) = 1: dMatPrps(5) = 0.5: dMatPrps(6) = 0.3125: dMatPrps(7) = 0: dMatPrps(8) = 0
             swBody.MaterialPropertyValues2 = dMatPrps
         End If
     Next i
     
-    MsgBox "Assigned vibrant unique colors to " & totalBodies & " bodies (" & numGroups & " distinct geometric signatures) exclusively in active Display State.", vbInformation
+    MsgBox "Assigned perfectly distinct Adaptive Colors to " & totalBodies & " bodies (" & numGroups & " distinct geometric signatures) strictly in active Display State.", vbInformation
     Exit Sub
     
 ErrorHandler:
@@ -355,8 +377,6 @@ Sub ProcessAssembly(swModel As SldWorks.ModelDoc2)
     Dim compGroup() As Integer
     Dim skippedComps As Integer
     Dim groupHues() As Double
-    Dim sVals(6) As Double
-    Dim vVals(6) As Double
     Dim coloredComps As Integer
     
     currentStep = "Loading Components"
@@ -370,14 +390,13 @@ Sub ProcessAssembly(swModel As SldWorks.ModelDoc2)
     
     totalComps = UBound(vComps) + 1
     
-    currentStep = "Collecting Component Extents"
+    currentStep = "Collecting Excluded Component Colors"
     numExcludedHues = 0
     ReDim excludedHues(1000)
     
     For i = 0 To totalComps - 1
         Dim swComp As SldWorks.Component2
         Set swComp = vComps(i)
-        
         Dim path As String
         path = LCase(swComp.GetPathName())
         
@@ -429,7 +448,6 @@ Sub ProcessAssembly(swModel As SldWorks.ModelDoc2)
                 groupIndex = numGroups
                 numGroups = numGroups + 1
             End If
-            
             compGroup(i) = groupIndex
         Else
             compGroup(i) = -1
@@ -437,31 +455,66 @@ Sub ProcessAssembly(swModel As SldWorks.ModelDoc2)
         End If
     Next i
     
-    currentStep = "Generating Colors"
+    currentStep = "Generating Colors (Adaptive Equidistant)"
+    
+    Dim totalLayers As Integer
+    Dim itemsPerLayer As Integer
+    If numGroups <= 21 Then
+        totalLayers = 1
+        itemsPerLayer = numGroups
+    Else
+        totalLayers = Int((numGroups - 1) / 21) + 1
+        If totalLayers > 7 Then totalLayers = 7
+        itemsPerLayer = Int((numGroups - 1) / totalLayers) + 1
+    End If
+    
     If numGroups > 0 Then ReDim groupHues(numGroups - 1)
     
     For i = 0 To numGroups - 1
-        Dim targetHue As Double
-        targetHue = (i * 137.50776)
-        targetHue = targetHue - 360 * Int(targetHue / 360)
+        Dim layerIdx As Integer
+        layerIdx = Int(i / itemsPerLayer)
         
+        Dim indexInLayer As Integer
+        indexInLayer = i Mod itemsPerLayer
+        
+        Dim currentLayerItems As Integer
+        If layerIdx = totalLayers - 1 Then
+            currentLayerItems = numGroups - (layerIdx * itemsPerLayer)
+        Else
+            currentLayerItems = itemsPerLayer
+        End If
+        
+        Dim targetHue As Double
+        If currentLayerItems > 1 Then
+            targetHue = (indexInLayer * (360# / currentLayerItems))
+            
+            Dim offset As Double
+            offset = (360# / currentLayerItems) / totalLayers
+            targetHue = targetHue + (layerIdx * offset)
+        Else
+            targetHue = layerIdx * 45
+        End If
+        
+        If targetHue >= 360 Then targetHue = targetHue - 360 * Int(targetHue / 360)
         targetHue = FindSafeHue(targetHue, excludedHues, numExcludedHues)
         groupHues(i) = targetHue
     Next i
     
-    sVals(0) = 1.00: vVals(0) = 1.00
-    sVals(1) = 0.50: vVals(1) = 1.00
-    sVals(2) = 1.00: vVals(2) = 0.50
-    sVals(3) = 0.50: vVals(3) = 0.60
-    sVals(4) = 0.75: vVals(4) = 0.75
-    sVals(5) = 1.00: vVals(5) = 0.75
-    sVals(6) = 0.75: vVals(6) = 1.00
+    Dim sVals(6) As Double
+    Dim vVals(6) As Double
+    sVals(0) = 1.00: vVals(0) = 1.00 ' Bright
+    sVals(1) = 0.45: vVals(1) = 1.00 ' Pastel
+    sVals(2) = 1.00: vVals(2) = 0.50 ' Dark
+    sVals(3) = 0.20: vVals(3) = 0.90 ' Pale
+    sVals(4) = 0.60: vVals(4) = 1.00 ' Soft
+    sVals(5) = 0.85: vVals(5) = 0.70 ' Muted
+    sVals(6) = 1.00: vVals(6) = 0.35 ' Very Dark
     
     currentStep = "Configuring Display State Targets"
     Dim swDispStateSetts As SldWorks.DisplayStateSetting
     Set swDispStateSetts = swModel.Extension.GetDisplayStateSetting(swDisplayStateOpts_e.swThisDisplayState)
     swDispStateSetts.Option = swDisplayStateOpts_e.swThisDisplayState
-    swDispStateSetts.PartLevel = False ' Critical: Only override at the Assembly level!
+    swDispStateSetts.PartLevel = False
     
     currentStep = "Applying Component Material Properties via Display States"
     coloredComps = 0
@@ -476,13 +529,13 @@ Sub ProcessAssembly(swModel As SldWorks.ModelDoc2)
             Dim hue As Double
             hue = groupHues(grpIdx)
             
-            Dim svIdx As Integer
-            svIdx = grpIdx Mod 7
+            Dim lIdx As Integer
+            lIdx = Int(grpIdx / itemsPerLayer)
+            If lIdx > 6 Then lIdx = 6
             
             Dim rgbArr As Variant
-            rgbArr = GetRGBFromHSV(hue, sVals(svIdx), vVals(svIdx))
+            rgbArr = GetRGBFromHSV(hue, sVals(lIdx), vVals(lIdx))
             
-            currentStep = "Injecting Specific Display State Appearance for Component"
             Dim entities(0) As Object
             Set entities(0) = swComp
             swDispStateSetts.Entities = entities
@@ -504,13 +557,9 @@ Sub ProcessAssembly(swModel As SldWorks.ModelDoc2)
                 
                 swModel.Extension.DisplayStateSpecMaterialPropertyValues(swDispStateSetts) = newAppearances
             Else
-                ' Absolute Fallback
                 Dim dMatPrps(8) As Double
-                dMatPrps(0) = rgbArr(0)
-                dMatPrps(1) = rgbArr(1)
-                dMatPrps(2) = rgbArr(2)
+                dMatPrps(0) = rgbArr(0): dMatPrps(1) = rgbArr(1): dMatPrps(2) = rgbArr(2)
                 dMatPrps(3) = 1: dMatPrps(4) = 1: dMatPrps(5) = 0.5: dMatPrps(6) = 0.3125: dMatPrps(7) = 0: dMatPrps(8) = 0
-                ' 1 = swThisConfiguration
                 swComp.SetMaterialPropertyValues2 dMatPrps, 1, Empty
             End If
             
@@ -518,8 +567,7 @@ Sub ProcessAssembly(swModel As SldWorks.ModelDoc2)
         End If
     Next i
     
-    currentStep = "Routine Completed"
-    MsgBox "Assigned vibrant unique colors to " & coloredComps & " components (" & numGroups & " parts) exclusively in active Display State." & vbCrLf & _
+    MsgBox "Assigned perfectly distinct Adaptive Colors to " & coloredComps & " components (" & numGroups & " distinct parts) strictly in active Display State." & vbCrLf & _
            "Skipped " & skippedComps & " subassemblies.", vbInformation
     Exit Sub
     
