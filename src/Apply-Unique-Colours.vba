@@ -1,9 +1,9 @@
-' ApplyUniqueColorsToBodies Macro - Version 5.5
+' ApplyUniqueColorsToBodies Macro - Version 5.6
 ' Assigns a unique, highly distinguishable color to each geometrically identical group of bodies or components.
 '
 ' --- MAJOR CHANGELOG ---
 ' V5 Features:
-' - Improved part differentiation using pure Mathematical Physics Solver (Moments of Inertia array) with strictly corrected SI-Unit (kg-m) scaling thresholds.
+' - Improved part differentiation using pure Mathematical Physics Solver (Moments of Inertia array) coupled with a Bi-Modal Topological Edge Differentiator.
 ' - Adaptive Equidistant Color Generation: Dynamically distributes interwoven Hues across 7 SV shading strata.
 '
 ' V4 Features:
@@ -69,6 +69,7 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
     Dim groupVolume() As Double
     Dim groupArea() As Double
     Dim groupFaceCount() As Long
+    Dim groupEdgeCount() As Long
     
     Dim groupM1() As Double
     Dim groupM2() As Double
@@ -123,6 +124,7 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
     ReDim groupVolume(totalBodies)
     ReDim groupArea(totalBodies)
     ReDim groupFaceCount(totalBodies)
+    ReDim groupEdgeCount(totalBodies)
     ReDim groupM1(totalBodies)
     ReDim groupM2(totalBodies)
     ReDim groupM3(totalBodies)
@@ -131,7 +133,7 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
     For i = 0 To totalBodies - 1
         Set swBody = vBodies(i)
         
-        Dim volume As Double, area As Double, faceCount As Long
+        Dim volume As Double, area As Double, faceCount As Long, edgeCount As Long
         Dim m1 As Double, m2 As Double, m3 As Double
         m1 = 0: m2 = 0: m3 = 0
         
@@ -217,6 +219,7 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
         End If
         
         faceCount = swBody.GetFaceCount
+        edgeCount = swBody.GetEdgeCount
         
         ' Sequence the Principal Moments
         Dim temp As Double
@@ -233,13 +236,20 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
             Dim volLimit As Double, areaLimit As Double
             Dim m1L As Double, m2L As Double, m3L As Double
             
-            volLimit = Abs(groupVolume(j)) * 0.0001 + 0.0000000001
-            areaLimit = Abs(groupArea(j)) * 0.0001 + 0.0000001
-            m1L = Abs(groupM1(j)) * 0.000000001 + 0.0000000001
-            m2L = Abs(groupM2(j)) * 0.000000001 + 0.0000000001
-            m3L = Abs(groupM3(j)) * 0.000000001 + 0.0000000001
+            volLimit = Abs(groupVolume(j)) * 0.0001 + 0.000000001
+            areaLimit = Abs(groupArea(j)) * 0.0001 + 0.000001
+            m1L = Abs(groupM1(j)) * 0.00000001 + 0.000000001
+            m2L = Abs(groupM2(j)) * 0.00000001 + 0.000000001
+            m3L = Abs(groupM3(j)) * 0.00000001 + 0.000000001
             
-            If Abs(groupVolume(j) - volume) <= volLimit And Abs(groupArea(j) - area) <= areaLimit And groupFaceCount(j) = faceCount Then
+            Dim edgeMatch As Boolean
+            If volume > 0.00001 Then
+                edgeMatch = (groupEdgeCount(j) = edgeCount)
+            Else
+                edgeMatch = True
+            End If
+            
+            If Abs(groupVolume(j) - volume) <= volLimit And Abs(groupArea(j) - area) <= areaLimit And groupFaceCount(j) = faceCount And edgeMatch Then
                 If Abs(groupM1(j) - m1) <= m1L And Abs(groupM2(j) - m2) <= m2L And Abs(groupM3(j) - m3) <= m3L Then
                     isMatch = True
                     groupIndex = j
@@ -252,6 +262,7 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
             groupVolume(numGroups) = volume
             groupArea(numGroups) = area
             groupFaceCount(numGroups) = faceCount
+            groupEdgeCount(numGroups) = edgeCount
             groupM1(numGroups) = m1
             groupM2(numGroups) = m2
             groupM3(numGroups) = m3
@@ -373,7 +384,7 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
     MsgBox "Applied unique colours to bodies in active display state" & vbCrLf & _
            "Total Bodies: " & totalBodies & vbCrLf & _
            "Unique Bodies: " & numGroups & vbCrLf & vbCrLf & _
-           "Macro Version: 5.5", vbInformation
+           "Macro Version: 5.6", vbInformation
     Exit Sub
     
 ErrorHandler:
@@ -590,7 +601,7 @@ Sub ProcessAssembly(swModel As SldWorks.ModelDoc2)
            "Total Bodies: " & coloredComps & vbCrLf & _
            "Unique Bodies: " & numGroups & vbCrLf & _
            "Skipped Subassemblies: " & skippedComps & vbCrLf & vbCrLf & _
-           "Macro Version: 5.5", vbInformation
+           "Macro Version: 5.6", vbInformation
     Exit Sub
     
 ErrorHandler:
