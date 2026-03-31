@@ -1,9 +1,9 @@
-' ApplyUniqueColorsToBodies Macro - Version 5.0
+' ApplyUniqueColorsToBodies Macro - Version 5.1
 ' Assigns a unique, highly distinguishable color to each geometrically identical group of bodies or components.
 '
 ' --- MAJOR CHANGELOG ---
 ' V5 Features:
-' - Improved part differentiation using Geometric Pattern Grouping (Volume, Area, Face Count, Moments of Inertia x y z).
+' - Improved part differentiation using pure Mathematical Physics Solver (Moments of Inertia array) with micro-tolerances.
 ' - Adaptive Equidistant Color Generation: Dynamically distributes interwoven Hues across 7 SV shading strata.
 '
 ' V4 Features:
@@ -233,11 +233,11 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
             Dim volLimit As Double, areaLimit As Double
             Dim m1L As Double, m2L As Double, m3L As Double
             
-            volLimit = Abs(groupVolume(j)) * 0.001 + 0.000000001
-            areaLimit = Abs(groupArea(j)) * 0.001 + 0.000000001
-            m1L = Abs(groupM1(j)) * 0.005 + 0.000000001
-            m2L = Abs(groupM2(j)) * 0.005 + 0.000000001
-            m3L = Abs(groupM3(j)) * 0.005 + 0.000000001
+            volLimit = Abs(groupVolume(j)) * 0.0001 + 0.0000000001
+            areaLimit = Abs(groupArea(j)) * 0.0001 + 0.0000000001
+            m1L = Abs(groupM1(j)) * 0.00001 + 0.0000000001
+            m2L = Abs(groupM2(j)) * 0.00001 + 0.0000000001
+            m3L = Abs(groupM3(j)) * 0.00001 + 0.0000000001
             
             If Abs(groupVolume(j) - volume) <= volLimit And Abs(groupArea(j) - area) <= areaLimit And groupFaceCount(j) = faceCount Then
                 If Abs(groupM1(j) - m1) <= m1L And Abs(groupM2(j) - m2) <= m2L And Abs(groupM3(j) - m3) <= m3L Then
@@ -266,11 +266,11 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
     
     Dim totalLayers As Integer
     Dim itemsPerLayer As Integer
-    If numGroups <= 21 Then
+    If numGroups <= 8 Then
         totalLayers = 1
         itemsPerLayer = numGroups
     Else
-        totalLayers = Int((numGroups - 1) / 21) + 1
+        totalLayers = Int((numGroups - 1) / 8) + 1
         If totalLayers > 7 Then totalLayers = 7
         itemsPerLayer = Int((numGroups - 1) / totalLayers) + 1
     End If
@@ -372,7 +372,8 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
     
     MsgBox "Applied unique colours to bodies in active display state" & vbCrLf & _
            "Total Bodies: " & totalBodies & vbCrLf & _
-           "Unique Bodies: " & numGroups, vbInformation
+           "Unique Bodies: " & numGroups & vbCrLf & vbCrLf & _
+           "Macro Version: 5.1", vbInformation
     Exit Sub
     
 ErrorHandler:
@@ -479,11 +480,11 @@ Sub ProcessAssembly(swModel As SldWorks.ModelDoc2)
     
     Dim totalLayers As Integer
     Dim itemsPerLayer As Integer
-    If numGroups <= 21 Then
+    If numGroups <= 8 Then
         totalLayers = 1
         itemsPerLayer = numGroups
     Else
-        totalLayers = Int((numGroups - 1) / 21) + 1
+        totalLayers = Int((numGroups - 1) / 8) + 1
         If totalLayers > 7 Then totalLayers = 7
         itemsPerLayer = Int((numGroups - 1) / totalLayers) + 1
     End If
@@ -588,7 +589,8 @@ Sub ProcessAssembly(swModel As SldWorks.ModelDoc2)
     MsgBox "Applied unique colours to components in active display state" & vbCrLf & _
            "Total Bodies: " & coloredComps & vbCrLf & _
            "Unique Bodies: " & numGroups & vbCrLf & _
-           "Skipped Subassemblies: " & skippedComps, vbInformation
+           "Skipped Subassemblies: " & skippedComps & vbCrLf & vbCrLf & _
+           "Macro Version: 5.1", vbInformation
     Exit Sub
     
 ErrorHandler:
