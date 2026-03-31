@@ -1,26 +1,24 @@
-' ApplyUniqueColorsToBodies Macro - Version 4.10
+' ApplyUniqueColorsToBodies Macro - Version 5.0
 ' Assigns a unique, highly distinguishable color to each geometrically identical group of bodies or components.
 '
-' --- FULL CHANGELOG ---
-' V4.10 Features:
-' - Bypassed SolidWorks IMassProperty API crashes (Error 438) by writing a pure VBA Mathematical Physics Engine.
-' - Macro natively constructs the 3x3 Inertia Tensor from the Origin parameters, applies the Parallel Axis Theorem, and solves the Cubic Characteristic Polynomial to extract pure Principal Momenta Eigenvalues natively.
+' --- MAJOR CHANGELOG ---
+' V5 Features:
+' - Improved part differentiation using Geometric Pattern Grouping (Volume, Area, Face Count, Moments of Inertia x y z).
+' - Adaptive Equidistant Color Generation: Dynamically distributes interwoven Hues across 7 SV shading strata.
 '
-' V4.9 Features:
-' - Attempted fallback to IMassProperty (V1 Interface) to resolve Error 438.
+' V4 Features:
+' - Display State Injection: Natively targets the active Display State and bypasses generic COM selections.
+' - Initial implementation of Golden Angle contrast mapping.
 '
-' V4.8 Features:
-' - Adaptive Equidistant Color Generation: Replaces Golden Angle algorithm with pre-calculated equidistant hue spacing.
-' - Dynamic S/V Layering: Weaves Hues across 7 distinct Saturation/Brightness profiles to eliminate shading collisions.
+' V3 Features:
+' - Assembly Level Processing: Filters subassemblies strictly for deepest-level parts.
+' - Face Appearance override checks to prevent accidental body collisions.
 '
-' V4.7 Features:
-' - Embedded Principal Moments track to differentiate visually identical bodies that have features (holes) in different coordinates.
+' V2 Features:
+' - Recognise like bodies using Geometric Pattern Grouping (Volume, Area, Face Count).
 '
-' V4.6, V4.5, V4.4:
-' - DisplayState overrides, strict enum types, string-based Selection, eliminating generic COM selection crashes.
-'
-' V3.0, V2.0, V1.0:
-' - Assembly level processing, Area/Volume groupings, golden angle initialization.
+' V1 Features:
+' - Base sequential HSV generation.
 
 Dim swApp As SldWorks.SldWorks
 
@@ -372,7 +370,9 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
         End If
     Next i
     
-    MsgBox "Assigned perfectly distinct Adaptive Colors to " & totalBodies & " bodies (" & numGroups & " distinct geometric signatures) strictly in active Display State.", vbInformation
+    MsgBox "Applied unique colours to bodies in active display state" & vbCrLf & _
+           "Total Bodies: " & totalBodies & vbCrLf & _
+           "Unique Bodies: " & numGroups, vbInformation
     Exit Sub
     
 ErrorHandler:
@@ -585,8 +585,10 @@ Sub ProcessAssembly(swModel As SldWorks.ModelDoc2)
         End If
     Next i
     
-    MsgBox "Assigned perfectly distinct Adaptive Colors to " & coloredComps & " components (" & numGroups & " distinct parts) strictly in active Display State." & vbCrLf & _
-           "Skipped " & skippedComps & " subassemblies.", vbInformation
+    MsgBox "Applied unique colours to components in active display state" & vbCrLf & _
+           "Total Bodies: " & coloredComps & vbCrLf & _
+           "Unique Bodies: " & numGroups & vbCrLf & _
+           "Skipped Subassemblies: " & skippedComps, vbInformation
     Exit Sub
     
 ErrorHandler:
