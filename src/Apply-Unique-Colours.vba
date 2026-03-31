@@ -1,59 +1,26 @@
-' ApplyUniqueColorsToBodies Macro - Version 4.9
+' ApplyUniqueColorsToBodies Macro - Version 4.10
 ' Assigns a unique, highly distinguishable color to each geometrically identical group of bodies or components.
 '
 ' --- FULL CHANGELOG ---
+' V4.10 Features:
+' - Bypassed SolidWorks IMassProperty API crashes (Error 438) by writing a pure VBA Mathematical Physics Engine.
+' - Macro natively constructs the 3x3 Inertia Tensor from the Origin parameters, applies the Parallel Axis Theorem, and solves the Cubic Characteristic Polynomial to extract pure Principal Momenta Eigenvalues natively.
+'
 ' V4.9 Features:
-' - Embedded MassProperty sub-typing fix: Overhauled physics extraction down from IMassProperty2 to baseline IMassProperty.
-' - Rigidized Variant array marshalling for AddBodies to fix Error 438 strictly on older backwards-compatible SolidWorks hosts.
+' - Attempted fallback to IMassProperty (V1 Interface) to resolve Error 438.
 '
 ' V4.8 Features:
 ' - Adaptive Equidistant Color Generation: Replaces Golden Angle algorithm with pre-calculated equidistant hue spacing.
-' - Dynamic S/V Layering: Part count perfectly scales and weaves Hues across 7 distinct Saturation/Brightness (Value) profiles to eliminate shading collisions.
+' - Dynamic S/V Layering: Weaves Hues across 7 distinct Saturation/Brightness profiles to eliminate shading collisions.
 '
 ' V4.7 Features:
-' - Embedded Principal Moments of Inertia via IMassProperty natively into the structural geometry tracking to lock-down part coordinates.
-' - Sorts Px, Py, Pz vectors natively to guarantee absolute geometric distinction (even on plates with matching area/volume).
+' - Embedded Principal Moments track to differentiate visually identical bodies that have features (holes) in different coordinates.
 '
-' V4.6 Features:
-' - Resolves fatal COM Disconnect/Automation errors (-2147417848) caused by Late-Bound Variant casting in Display State access.
-' - Enforces strictly-typed Long ENUMs and Early-Bound interfaces for DisplayStateSetting.
+' V4.6, V4.5, V4.4:
+' - DisplayState overrides, strict enum types, string-based Selection, eliminating generic COM selection crashes.
 '
-' V4.5 Features:
-' - Natively targets the specific ACTIVE DISPLAY STATE using the DisplayStateSetting API.
-' - Resolves color bleeding between display states linked to a single configuration.
-' - Completely bypasses unstable selection commands (SelectByID2, Select4).
-'
-' V4.4 Features:
-' - Eliminated standard Entity.Select4 COM Selection Errors.
-' - String-Based Entity Selection using raw SelectByID2.
-'
-' V4.3 Features:
-' - Granular Error Telemetry with detailed step tracing.
-' - Preventative Null Reference (Nothing) COM Interface fixes.
-'
-' V4.2 Features:
-' - Type Mismatch Fix for SolidWorks Variant matrices.
-' - Strict SpecifyConfiguration targeting via API constants.
-'
-' V4.1 Features:
-' - Hardened Per-Configuration Targeting array fixes to prevent bleeding.
-'
-' V4.0 Features:
-' - Maximized Visual Contrast using Golden Angle distribution.
-' - Complex 7-Stage Saturation & Brightness Variations for thousands of hues.
-'
-' V3.1 Features:
-' - Exclusive Subassembly filtering for deepest-level parts.
-'
-' V3.0 Features:
-' - Face Appearance override checks to prevent accidental body collisions.
-' - Assembly Level Support grouping via path identifiers.
-'
-' V2.0 Features:
-' - Geometric Pattern Grouping (Volume, Area, Face Count).
-'
-' V1.0 Features:
-' - Base sequential HSV generation.
+' V3.0, V2.0, V1.0:
+' - Assembly level processing, Area/Volume groupings, golden angle initialization.
 
 Dim swApp As SldWorks.SldWorks
 
@@ -61,7 +28,6 @@ Sub main()
     On Error GoTo mainError
     
     Set swApp = Application.SldWorks
-    
     Dim swModel As SldWorks.ModelDoc2
     Set swModel = swApp.ActiveDoc
     
@@ -82,7 +48,6 @@ Sub main()
         Exit Sub
     End If
     
-    ' Redraw the graphics area to display the new colors
     swModel.GraphicsRedraw2
     Exit Sub
     
@@ -110,7 +75,6 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
     Dim groupM1() As Double
     Dim groupM2() As Double
     Dim groupM3() As Double
-    
     Dim bodyGroup() As Integer
     Dim groupHues() As Double
     
@@ -139,16 +103,12 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
             For j = 0 To UBound(vFaces)
                 Dim swFace As SldWorks.Face2
                 Set swFace = vFaces(j)
-                
                 Dim vMat As Variant
                 vMat = swFace.MaterialPropertyValues
                 If IsArray(vMat) Then
                     If UBound(vMat) >= 2 Then
-                        Dim r As Double, g As Double, b As Double
-                        r = vMat(0): g = vMat(1): b = vMat(2)
                         Dim faceHue As Double
-                        faceHue = GetHSVHueFromRGB(r, g, b)
-                        
+                        faceHue = GetHSVHueFromRGB(CDbl(vMat(0)), CDbl(vMat(1)), CDbl(vMat(2)))
                         If numExcludedHues >= UBound(excludedHues) Then
                             ReDim Preserve excludedHues(UBound(excludedHues) + 1000)
                         End If
@@ -162,7 +122,6 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
     
     currentStep = "Grouping Bodies"
     numGroups = 0
-    
     ReDim groupVolume(totalBodies)
     ReDim groupArea(totalBodies)
     ReDim groupFaceCount(totalBodies)
@@ -171,47 +130,103 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
     ReDim groupM3(totalBodies)
     ReDim bodyGroup(totalBodies)
     
-    Dim swMassProp As SldWorks.MassProperty
-    Set swMassProp = swModel.Extension.CreateMassProperty
-    
     For i = 0 To totalBodies - 1
         Set swBody = vBodies(i)
+        
+        Dim volume As Double, area As Double, faceCount As Long
+        Dim m1 As Double, m2 As Double, m3 As Double
+        m1 = 0: m2 = 0: m3 = 0
+        
+        currentStep = "Extracting Raw Origin Mass Tensor"
         Dim vProps As Variant
         vProps = swBody.GetMassProperties(1.0)
         
-        Dim volume As Double, area As Double, faceCount As Long
         If IsArray(vProps) Then
+            Dim cx As Double, cy As Double, cz As Double
+            Dim mass As Double
+            Dim Ixx_o As Double, Iyy_o As Double, Izz_o As Double
+            Dim Ixy_o As Double, Ixz_o As Double, Iyz_o As Double
+            
+            cx = vProps(0): cy = vProps(1): cz = vProps(2)
             volume = vProps(3)            
             area = vProps(4)
+            Ixx_o = vProps(5): Iyy_o = vProps(6): Izz_o = vProps(7)
+            Ixy_o = vProps(8): Ixz_o = vProps(9): Iyz_o = vProps(10)
+            mass = vProps(11)
+            
+            ' Parallel Axis Theorem: Shift to Center of Mass
+            Dim Ixx As Double, Iyy As Double, Izz As Double
+            Dim Ixy As Double, Ixz As Double, Iyz As Double
+            Ixx = Ixx_o - mass * (cy * cy + cz * cz)
+            Iyy = Iyy_o - mass * (cx * cx + cz * cz)
+            Izz = Izz_o - mass * (cx * cx + cy * cy)
+            Ixy = Ixy_o - mass * (cx * cy)
+            Ixz = Ixz_o - mass * (cx * cz)
+            Iyz = Iyz_o - mass * (cy * cz)
+            
+            ' Inertia Tensor format for Eigenvalues
+            Dim Txx As Double, Tyy As Double, Tzz As Double
+            Dim Txy As Double, Txz As Double, Tyz As Double
+            Txx = Ixx: Tyy = Iyy: Tzz = Izz
+            Txy = -Ixy: Txz = -Ixz: Tyz = -Iyz
+            
+            ' Cubic Characteristic Equation Coefficients: x^3 + b2 x^2 + b1 x + b0 = 0
+            Dim c2 As Double, c1 As Double, c0 As Double
+            c2 = Txx + Tyy + Tzz
+            c1 = (Txx * Tyy - Txy * Txy) + (Txx * Tzz - Txz * Txz) + (Tyy * Tzz - Tyz * Tyz)
+            c0 = Txx * (Tyy * Tzz - Tyz * Tyz) - Txy * (Txy * Tzz - Txz * Tyz) + Txz * (Txy * Tyz - Tyy * Txz)
+            
+            Dim b2 As Double, b1 As Double, b0 As Double
+            b2 = -c2: b1 = c1: b0 = -c0
+            
+            Dim Q As Double, R As Double, D As Double
+            Q = (3 * b1 - b2 * b2) / 9
+            R = (9 * b2 * b1 - 27 * b0 - 2 * b2 * b2 * b2) / 54
+            D = Q * Q * Q + R * R
+            
+            If D <= 0 Then
+                Dim Q3 As Double
+                Q3 = -Q * Q * Q
+                If Q3 <= 0 Then Q3 = 0.0000000001
+                
+                Dim ratio As Double
+                ratio = R / Sqr(Q3)
+                If ratio > 1 Then ratio = 1
+                If ratio < -1 Then ratio = -1
+                
+                Dim theta As Double
+                If ratio = 1 Then
+                    theta = 0
+                ElseIf ratio = -1 Then
+                    theta = 3.14159265358979
+                Else
+                    theta = Atn(-ratio / Sqr(-ratio * ratio + 1)) + 2 * Atn(1)
+                End If
+                
+                Dim sq_ngQ As Double
+                If Q < 0 Then
+                    sq_ngQ = Sqr(-Q)
+                Else
+                    sq_ngQ = 0
+                End If
+                
+                m1 = 2 * sq_ngQ * Cos(theta / 3) - b2 / 3
+                m2 = 2 * sq_ngQ * Cos((theta + 2 * 3.14159265358979) / 3) - b2 / 3
+                m3 = 2 * sq_ngQ * Cos((theta + 4 * 3.14159265358979) / 3) - b2 / 3
+            End If
         Else
             volume = 0: area = 0
         End If
+        
         faceCount = swBody.GetFaceCount
         
-        Dim bArr(0) As SldWorks.Body2
-        Set bArr(0) = swBody
-        
-        Dim vBodiesArr As Variant
-        vBodiesArr = bArr
-        
-        Dim bRet As Boolean
-        bRet = swMassProp.AddBodies(vBodiesArr)
-        
-        Dim pMoments As Variant
-        pMoments = swMassProp.PrincipalMomentsOfInertia
-        
-        Dim m1 As Double, m2 As Double, m3 As Double
-        If IsArray(pMoments) Then
-            m1 = pMoments(0): m2 = pMoments(1): m3 = pMoments(2)
-        Else
-            m1 = 0: m2 = 0: m3 = 0
-        End If
-        
+        ' Sequence the Principal Moments
         Dim temp As Double
         If m1 > m2 Then temp = m1: m1 = m2: m2 = temp
         If m2 > m3 Then temp = m2: m2 = m3: m3 = temp
         If m1 > m2 Then temp = m1: m1 = m2: m2 = temp
         
+        currentStep = "Comparing Geometric Tolerance Limits"
         Dim isMatch As Boolean
         isMatch = False
         Dim groupIndex As Integer
@@ -267,7 +282,6 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
     For i = 0 To numGroups - 1
         Dim layerIdx As Integer
         layerIdx = Int(i / itemsPerLayer)
-        
         Dim indexInLayer As Integer
         indexInLayer = i Mod itemsPerLayer
         
@@ -281,7 +295,6 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
         Dim targetHue As Double
         If currentLayerItems > 1 Then
             targetHue = (indexInLayer * (360# / currentLayerItems))
-            
             Dim offset As Double
             offset = (360# / currentLayerItems) / totalLayers
             targetHue = targetHue + (layerIdx * offset)
@@ -321,7 +334,6 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
         
         Dim grpIdx As Integer
         grpIdx = bodyGroup(i)
-        
         Dim hue As Double
         hue = groupHues(grpIdx)
         
@@ -415,15 +427,12 @@ Sub ProcessAssembly(swModel As SldWorks.ModelDoc2)
             vMat = swComp.MaterialPropertyValues
             If IsArray(vMat) Then
                 If UBound(vMat) >= 2 Then
-                    Dim r As Double, g As Double, b As Double
-                    r = vMat(0): g = vMat(1): b = vMat(2)
-                    Dim compHue As Double
-                    compHue = GetHSVHueFromRGB(r, g, b)
-                    
+                    Dim faceHue As Double
+                    faceHue = GetHSVHueFromRGB(CDbl(vMat(0)), CDbl(vMat(1)), CDbl(vMat(2)))
                     If numExcludedHues >= UBound(excludedHues) Then
                         ReDim Preserve excludedHues(UBound(excludedHues) + 1000)
                     End If
-                    excludedHues(numExcludedHues) = compHue
+                    excludedHues(numExcludedHues) = faceHue
                     numExcludedHues = numExcludedHues + 1
                 End If
             End If
@@ -438,15 +447,16 @@ Sub ProcessAssembly(swModel As SldWorks.ModelDoc2)
     
     For i = 0 To totalComps - 1
         Set swComp = vComps(i)
-        path = LCase(swComp.GetPathName())
+        Dim pathStr As String
+        pathStr = LCase(swComp.GetPathName())
         
-        If Right(path, 7) = ".sldprt" Then
+        If Right(pathStr, 7) = ".sldprt" Then
             Dim isMatch As Boolean
             isMatch = False
             Dim groupIndex As Integer
             
             For j = 0 To numGroups - 1
-                If groupPaths(j) = path Then
+                If groupPaths(j) = pathStr Then
                     isMatch = True
                     groupIndex = j
                     Exit For
@@ -454,7 +464,7 @@ Sub ProcessAssembly(swModel As SldWorks.ModelDoc2)
             Next j
             
             If Not isMatch Then
-                groupPaths(numGroups) = path
+                groupPaths(numGroups) = pathStr
                 groupIndex = numGroups
                 numGroups = numGroups + 1
             End If
@@ -497,7 +507,6 @@ Sub ProcessAssembly(swModel As SldWorks.ModelDoc2)
         Dim targetHue As Double
         If currentLayerItems > 1 Then
             targetHue = (indexInLayer * (360# / currentLayerItems))
-            
             Dim offset As Double
             offset = (360# / currentLayerItems) / totalLayers
             targetHue = targetHue + (layerIdx * offset)
@@ -535,7 +544,6 @@ Sub ProcessAssembly(swModel As SldWorks.ModelDoc2)
         If compGroup(i) >= 0 Then
             Dim grpIdx As Integer
             grpIdx = compGroup(i)
-            
             Dim hue As Double
             hue = groupHues(grpIdx)
             
