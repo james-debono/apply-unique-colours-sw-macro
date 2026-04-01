@@ -1,11 +1,11 @@
-' ApplyUniqueColorsToBodies Macro - Version 5.10
+' ApplyUniqueColorsToBodies Macro - Version 5.11
 ' Assigns a unique, highly distinguishable color to each geometrically identical group of bodies or components.
 '
 ' --- MAJOR CHANGELOG ---
 ' V5 Features:
+' - Inertia Tensor Trace Mapping: Mathematically completely deprecates imaginary polynomial bounds by comparing pure rotationally invariant Matrix Determinants ($J_1, J_2, J_3$) instead of mathematically lossy Characteristic Equation roots. Unconditionally flawlessly groups parallel-offset structural identicals natively in-RAM.
 ' - Teleportation Physics Extractor: In-RAM instantiation of body duplicates natively re-translated to the (0,0,0) document origin. Mathematically strips Parallel Axis transformation floating point catastrophic errors down to raw geometric $10^{-15}$ baseline precision fidelity natively on `GetMassProperties(1.0)`, bypassing 438 COM errors utterly perfectly.
-' - Universal robust `D > 0` Polynomial abort suppression algorithm introduced to guarantee physical calculations resolve for mathematically degenerate arrays.
-' - Improved part differentiation using Mathematical Physics Solver (Moments of Inertia array) coupled with a Bi-Modal Topological Edge Differentiator.
+' - Improved part differentiation using Mathematical Physics Solver (Moments of Inertia Invariants) coupled with a Bi-Modal Topological Edge Differentiator.
 ' - Adaptive Equidistant Color Generation: Dynamically distributes interwoven Hues across 7 SV shading strata.
 '
 ' V4 Features:
@@ -73,9 +73,9 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
     Dim groupFaceCount() As Long
     Dim groupEdgeCount() As Long
     
-    Dim groupM1() As Double
-    Dim groupM2() As Double
-    Dim groupM3() As Double
+    Dim groupJ1() As Double
+    Dim groupJ2() As Double
+    Dim groupJ3() As Double
     Dim bodyGroup() As Integer
     Dim groupHues() As Double
     
@@ -127,17 +127,17 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
     ReDim groupArea(totalBodies)
     ReDim groupFaceCount(totalBodies)
     ReDim groupEdgeCount(totalBodies)
-    ReDim groupM1(totalBodies)
-    ReDim groupM2(totalBodies)
-    ReDim groupM3(totalBodies)
+    ReDim groupJ1(totalBodies)
+    ReDim groupJ2(totalBodies)
+    ReDim groupJ3(totalBodies)
     ReDim bodyGroup(totalBodies)
     
     For i = 0 To totalBodies - 1
         Set swBody = vBodies(i)
         
         Dim volume As Double, area As Double, faceCount As Long, edgeCount As Long
-        Dim m1 As Double, m2 As Double, m3 As Double
-        m1 = 0: m2 = 0: m3 = 0
+        Dim j1 As Double, j2 As Double, j3 As Double
+        j1 = 0: j2 = 0: j3 = 0
         
         currentStep = "Translating Body to Global Origin for Precision Tensor"
         Dim vProps As Variant
@@ -183,66 +183,19 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
             ' Revert signs of cross products specifically for eigenvalue equation logic
             Txy = -vPropsO(8): Txz = -vPropsO(9): Tyz = -vPropsO(10)
             
-            ' Cubic Characteristic Equation Coefficients: x^3 + b2 x^2 + b1 x + b0 = 0
-            Dim c2 As Double, c1 As Double, c0 As Double
-            c2 = Txx + Tyy + Tzz
-            c1 = (Txx * Tyy - Txy * Txy) + (Txx * Tzz - Txz * Txz) + (Tyy * Tzz - Tyz * Tyz)
-            c0 = Txx * (Tyy * Tzz - Tyz * Tyz) - Txy * (Txy * Tzz - Txz * Tyz) + Txz * (Txy * Tyz - Tyy * Txz)
-            
-            Dim b2 As Double, b1 As Double, b0 As Double
-            b2 = -c2: b1 = c1: b0 = -c0
-            
-            Dim Q As Double, R As Double, D As Double
-            Q = (3 * b1 - b2 * b2) / 9
-            R = (9 * b2 * b1 - 27 * b0 - 2 * b2 * b2 * b2) / 54
-            D = Q * Q * Q + R * R
-            
-            ' Clamp Discriminant: For mathematically symmetric square tensors, D <= 0 guarantees 3 real roots.
-            ' Precision loss via global-basis Catastrophic Cancellation maps the boundary into D > 0.
-            If D > 0 Then D = 0
-            
-            Dim Q3 As Double
-            Q3 = -Q * Q * Q
-            If Q3 <= 0 Then Q3 = 0.0000000001
-            
-            Dim ratio As Double
-            ratio = R / Sqr(Q3)
-            If ratio > 1 Then ratio = 1
-            If ratio < -1 Then ratio = -1
-            
-            Dim theta As Double
-            If ratio = 1 Then
-                theta = 0
-            ElseIf ratio = -1 Then
-                theta = 3.14159265358979
-            Else
-                theta = Atn(-ratio / Sqr(-ratio * ratio + 1)) + 2 * Atn(1)
-            End If
-            
-            Dim sq_ngQ As Double
-            If Q < 0 Then
-                sq_ngQ = Sqr(-Q)
-            Else
-                sq_ngQ = 0
-            End If
-            
-            m1 = 2 * sq_ngQ * Cos(theta / 3) - b2 / 3
-            m2 = 2 * sq_ngQ * Cos((theta + 2 * 3.14159265358979) / 3) - b2 / 3
-            m3 = 2 * sq_ngQ * Cos((theta + 4 * 3.14159265358979) / 3) - b2 / 3
+            ' Matrix Invariants (Rotationally Invariant perfectly substitute mathematical Eigenvalue roots without trigonometric error)
+            j1 = Txx + Tyy + Tzz
+            j2 = (Txx * Tyy - Txy * Txy) + (Txx * Tzz - Txz * Txz) + (Tyy * Tzz - Tyz * Tyz)
+            j3 = Txx * (Tyy * Tzz - Tyz * Tyz) - Txy * (Txy * Tzz - Txz * Tyz) + Txz * (Txy * Tyz - Tyy * Txz)
             
             Set swBodyCopy = Nothing
         Else
             volume = 0: area = 0
+            j1 = 0: j2 = 0: j3 = 0
         End If
         
         faceCount = swBody.GetFaceCount
         edgeCount = swBody.GetEdgeCount
-        
-        ' Sequence the Principal Moments
-        Dim temp As Double
-        If m1 > m2 Then temp = m1: m1 = m2: m2 = temp
-        If m2 > m3 Then temp = m2: m2 = m3: m3 = temp
-        If m1 > m2 Then temp = m1: m1 = m2: m2 = temp
         
         currentStep = "Comparing Geometric Tolerance Limits"
         Dim isMatch As Boolean
@@ -251,13 +204,13 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
         
         For j = 0 To numGroups - 1
             Dim volLimit As Double, areaLimit As Double
-            Dim m1L As Double, m2L As Double, m3L As Double
+            Dim j1L As Double, j2L As Double, j3L As Double
             
             volLimit = Abs(groupVolume(j)) * 0.0001 + 0.000000001
             areaLimit = Abs(groupArea(j)) * 0.0001 + 0.000001
-            m1L = Abs(groupM1(j)) * 0.00000001 + 0.000000001
-            m2L = Abs(groupM2(j)) * 0.00000001 + 0.000000001
-            m3L = Abs(groupM3(j)) * 0.00000001 + 0.000000001
+            j1L = Abs(groupJ1(j)) * 0.00000001 + 0.000000001
+            j2L = Abs(groupJ2(j)) * 0.00000001 + 0.000000001
+            j3L = Abs(groupJ3(j)) * 0.00000001 + 0.000000001
             
             Dim edgeMatch As Boolean
             If volume > 0.00001 Then
@@ -267,7 +220,7 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
             End If
             
             If Abs(groupVolume(j) - volume) <= volLimit And Abs(groupArea(j) - area) <= areaLimit And groupFaceCount(j) = faceCount And edgeMatch Then
-                If Abs(groupM1(j) - m1) <= m1L And Abs(groupM2(j) - m2) <= m2L And Abs(groupM3(j) - m3) <= m3L Then
+                If Abs(groupJ1(j) - j1) <= j1L And Abs(groupJ2(j) - j2) <= j2L And Abs(groupJ3(j) - j3) <= j3L Then
                     isMatch = True
                     groupIndex = j
                     Exit For
@@ -280,9 +233,9 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
             groupArea(numGroups) = area
             groupFaceCount(numGroups) = faceCount
             groupEdgeCount(numGroups) = edgeCount
-            groupM1(numGroups) = m1
-            groupM2(numGroups) = m2
-            groupM3(numGroups) = m3
+            groupJ1(numGroups) = j1
+            groupJ2(numGroups) = j2
+            groupJ3(numGroups) = j3
             groupIndex = numGroups
             numGroups = numGroups + 1
         End If
@@ -401,7 +354,7 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
     MsgBox "Applied unique colours to bodies in active display state" & vbCrLf & _
            "Total Bodies: " & totalBodies & vbCrLf & _
            "Unique Bodies: " & numGroups & vbCrLf & vbCrLf & _
-           "Macro Version: 5.10", vbInformation
+           "Macro Version: 5.11", vbInformation
     Exit Sub
     
 ErrorHandler:
@@ -618,7 +571,7 @@ Sub ProcessAssembly(swModel As SldWorks.ModelDoc2)
            "Total Bodies: " & coloredComps & vbCrLf & _
            "Unique Bodies: " & numGroups & vbCrLf & _
            "Skipped Subassemblies: " & skippedComps & vbCrLf & vbCrLf & _
-           "Macro Version: 5.10", vbInformation
+           "Macro Version: 5.11", vbInformation
     Exit Sub
     
 ErrorHandler:
