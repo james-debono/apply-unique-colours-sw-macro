@@ -1,11 +1,11 @@
-' ApplyUniqueColorsToBodies Macro - Version 5.11
+' ApplyUniqueColorsToBodies Macro - Version 5.12
 ' Assigns a unique, highly distinguishable color to each geometrically identical group of bodies or components.
 '
 ' --- MAJOR CHANGELOG ---
 ' V5 Features:
-' - Inertia Tensor Trace Mapping: Mathematically completely deprecates imaginary polynomial bounds by comparing pure rotationally invariant Matrix Determinants ($J_1, J_2, J_3$) instead of mathematically lossy Characteristic Equation roots. Unconditionally flawlessly groups parallel-offset structural identicals natively in-RAM.
-' - Teleportation Physics Extractor: In-RAM instantiation of body duplicates natively re-translated to the (0,0,0) document origin. Mathematically strips Parallel Axis transformation floating point catastrophic errors down to raw geometric $10^{-15}$ baseline precision fidelity natively on `GetMassProperties(1.0)`, bypassing 438 COM errors utterly perfectly.
-' - Improved part differentiation using Mathematical Physics Solver (Moments of Inertia Invariants) coupled with a Bi-Modal Topological Edge Differentiator.
+' - B-Rep Topological Hash: Radically breaks physics limitations by natively tracking the absolute Euclidean distance integrals of all Body Vertices specifically plotted against the body's local mathematical Center of Mass. Geometrically forces offset structural holes (which generate functionally completely identical Tensor Arrays) to radically branch groups natively.
+' - Inertia Tensor Trace Mapping: Mathematically completely deprecates imaginary polynomial bounds by comparing pure rotationally invariant Matrix Determinants ($J_1, J_2, J_3$).
+' - Teleportation Physics Extractor: In-RAM instantiation of body duplicates natively re-translated to the (0,0,0) document origin.
 ' - Adaptive Equidistant Color Generation: Dynamically distributes interwoven Hues across 7 SV shading strata.
 '
 ' V4 Features:
@@ -71,11 +71,10 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
     Dim groupVolume() As Double
     Dim groupArea() As Double
     Dim groupFaceCount() As Long
-    Dim groupEdgeCount() As Long
-    
     Dim groupJ1() As Double
     Dim groupJ2() As Double
     Dim groupJ3() As Double
+    Dim groupVertexHash() As Double
     Dim bodyGroup() As Integer
     Dim groupHues() As Double
     
@@ -130,6 +129,7 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
     ReDim groupJ1(totalBodies)
     ReDim groupJ2(totalBodies)
     ReDim groupJ3(totalBodies)
+    ReDim groupVertexHash(totalBodies)
     ReDim bodyGroup(totalBodies)
     
     For i = 0 To totalBodies - 1
@@ -197,6 +197,72 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
         faceCount = swBody.GetFaceCount
         edgeCount = swBody.GetEdgeCount
         
+        ' NEW: B-Rep Topological Hash for perfectly symmetric geometries masking as Identical Arrays
+        Dim vertexHash As Double
+        vertexHash = 0
+        Dim vEdges As Variant
+        vEdges = swBody.GetEdges
+        If Not IsEmpty(vEdges) Then
+            Dim ptList() As Double
+            Dim ptCount As Integer
+            ptCount = 0
+            ReDim ptList(UBound(vEdges) * 6 + 6)
+            
+            Dim kEdge As Integer
+            For kEdge = 0 To UBound(vEdges)
+                Dim swEdge As SldWorks.Edge
+                Set swEdge = vEdges(kEdge)
+                Dim swV1 As SldWorks.Vertex, swV2 As SldWorks.Vertex
+                Set swV1 = swEdge.GetStartVertex
+                Set swV2 = swEdge.GetEndVertex
+                
+                If Not swV1 Is Nothing Then
+                    Dim p1 As Variant
+                    p1 = swV1.GetPoint
+                    Dim isNew1 As Boolean: isNew1 = True
+                    Dim m1_i As Integer
+                    For m1_i = 0 To ptCount - 1
+                        If Abs(ptList(m1_i * 3) - p1(0)) < 0.0001 Then
+                            If Abs(ptList(m1_i * 3 + 1) - p1(1)) < 0.0001 Then
+                                If Abs(ptList(m1_i * 3 + 2) - p1(2)) < 0.0001 Then
+                                    isNew1 = False: Exit For
+                                End If
+                            End If
+                        End If
+                    Next m1_i
+                    If isNew1 Then
+                        ptList(ptCount * 3) = p1(0): ptList(ptCount * 3 + 1) = p1(1): ptList(ptCount * 3 + 2) = p1(2)
+                        ptCount = ptCount + 1
+                    End If
+                End If
+                
+                If Not swV2 Is Nothing Then
+                    Dim p2 As Variant
+                    p2 = swV2.GetPoint
+                    Dim isNew2 As Boolean: isNew2 = True
+                    Dim m2_i As Integer
+                    For m2_i = 0 To ptCount - 1
+                        If Abs(ptList(m2_i * 3) - p2(0)) < 0.0001 Then
+                            If Abs(ptList(m2_i * 3 + 1) - p2(1)) < 0.0001 Then
+                                If Abs(ptList(m2_i * 3 + 2) - p2(2)) < 0.0001 Then
+                                    isNew2 = False: Exit For
+                                End If
+                            End If
+                        End If
+                    Next m2_i
+                    If isNew2 Then
+                        ptList(ptCount * 3) = p2(0): ptList(ptCount * 3 + 1) = p2(1): ptList(ptCount * 3 + 2) = p2(2)
+                        ptCount = ptCount + 1
+                    End If
+                End If
+            Next kEdge
+            
+            Dim kV As Integer
+            For kV = 0 To ptCount - 1
+                vertexHash = vertexHash + Sqr((ptList(kV * 3) - cx) ^ 2 + (ptList(kV * 3 + 1) - cy) ^ 2 + (ptList(kV * 3 + 2) - cz) ^ 2)
+            Next kV
+        End If
+        
         currentStep = "Comparing Geometric Tolerance Limits"
         Dim isMatch As Boolean
         isMatch = False
@@ -205,9 +271,12 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
         For j = 0 To numGroups - 1
             Dim volLimit As Double, areaLimit As Double
             Dim j1L As Double, j2L As Double, j3L As Double
+            Dim vhLimit As Double
             
             volLimit = Abs(groupVolume(j)) * 0.0001 + 0.000000001
             areaLimit = Abs(groupArea(j)) * 0.0001 + 0.000001
+            vhLimit = Abs(groupVertexHash(j)) * 0.000001 + 0.00001
+            
             j1L = Abs(groupJ1(j)) * 0.00000001 + 0.000000001
             j2L = Abs(groupJ2(j)) * 0.00000001 + 0.000000001
             j3L = Abs(groupJ3(j)) * 0.00000001 + 0.000000001
@@ -219,7 +288,7 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
                 edgeMatch = True
             End If
             
-            If Abs(groupVolume(j) - volume) <= volLimit And Abs(groupArea(j) - area) <= areaLimit And groupFaceCount(j) = faceCount And edgeMatch Then
+            If Abs(groupVolume(j) - volume) <= volLimit And Abs(groupArea(j) - area) <= areaLimit And Abs(groupVertexHash(j) - vertexHash) <= vhLimit And groupFaceCount(j) = faceCount And edgeMatch Then
                 If Abs(groupJ1(j) - j1) <= j1L And Abs(groupJ2(j) - j2) <= j2L And Abs(groupJ3(j) - j3) <= j3L Then
                     isMatch = True
                     groupIndex = j
@@ -233,6 +302,7 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
             groupArea(numGroups) = area
             groupFaceCount(numGroups) = faceCount
             groupEdgeCount(numGroups) = edgeCount
+            groupVertexHash(numGroups) = vertexHash
             groupJ1(numGroups) = j1
             groupJ2(numGroups) = j2
             groupJ3(numGroups) = j3
@@ -354,7 +424,7 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
     MsgBox "Applied unique colours to bodies in active display state" & vbCrLf & _
            "Total Bodies: " & totalBodies & vbCrLf & _
            "Unique Bodies: " & numGroups & vbCrLf & vbCrLf & _
-           "Macro Version: 5.11", vbInformation
+           "Macro Version: 5.12", vbInformation
     Exit Sub
     
 ErrorHandler:
@@ -571,7 +641,7 @@ Sub ProcessAssembly(swModel As SldWorks.ModelDoc2)
            "Total Bodies: " & coloredComps & vbCrLf & _
            "Unique Bodies: " & numGroups & vbCrLf & _
            "Skipped Subassemblies: " & skippedComps & vbCrLf & vbCrLf & _
-           "Macro Version: 5.11", vbInformation
+           "Macro Version: 5.12", vbInformation
     Exit Sub
     
 ErrorHandler:
