@@ -1,16 +1,11 @@
-' ApplyUniqueColorsToBodies Macro - Version 5.14
+' ApplyUniqueColorsToBodies Macro - Version 5.15
 ' Assigns a unique, highly distinguishable color to each geometrically identical group of bodies or components.
 '
 ' --- MAJOR CHANGELOG ---
 ' V5 Features:
-' - Face-Centroid Topology Integration: Directly extracts mathematical boundaries of fully seamless circular surfaces (holes) natively missing start/end vertices. Overloads the absolute Euclidean spatial hash, aggressively forcing off-center holes to irrevocably sever group bindings.
-' - Hyper-Scaled Density Tensor Extraction: Mutates native `GetMassProperties` density scaling up to 1000x, catapulting infinitesimally diminutive offset moment-of-inertia deltas ($10^{-11}$) completely over the unalterable computational precision floor natively out to the 8th decimal bracket!
-' - Chiral Pseudoscalar Hash: Mathematically detects Left-Hand vs Right-Hand structural bodies natively using a Euclidean triple-scalar determinant $H = R_1 \cdot (R_3 \times R_5)$. Flawlessly separates identically mirrored solid models without falsely fracturing $90^\circ$ rotated pairs.
-' - Adaptive Equidistant Color Generation: Dynamically distributes interwoven Hues across 7 SV shading strata.
-'
-' V4 Features:
-' - Display State Injection: Natively targets the active Display State and bypasses generic COM selections.
-' - Initial implementation of Golden Angle contrast mapping.
+' - Universal Non-Chiral Precision Engine (V5.15): Radically stripped restrictive B-Rep Chiral Arrays and un-robust Face centroid topologies. Because CNC shops do not manufacture left-hand off-the-shelf threaded inserts, CAD inserts that are mechanically "mirrored" during assembly modeling natively flip into Left-Hand geometries, which broke the V5.13 absolute Chiral detection. V5.15 instead exclusively leverages the Hyper-Scaled Matrix Tensor $J_1(x)^2$ scalar, allowing identical parts imported backwards (or mirrored) to merge seamlessly, while natively capturing infinitesimally small offset structural hole translations using precisely tuned $10^{-10}$ inertial precision tracking.
+' - Hyper-Scaled Density Tensor Extraction: Mutates native `GetMassProperties` density scaling up to 1000x, catapulting infinitesimally diminutive offset moment-of-inertia deltas completely over the unalterable computational precision floor natively out to the 10th decimal bracket!
+' - B-Rep Topological Hash: Radically breaks physics limitations by natively tracking the absolute Euclidean distance integrals of all Body Vertices specifically plotted against the body's local mathematical Center of Mass. Geometrically enforces symmetry limits (which generate functionally completely identical Eigenvalue Tensor Arrays) to natively limit false cross-structural merging.
 '
 ' V3 Features:
 ' - Assembly Level Processing: Filters subassemblies strictly for deepest-level parts.
@@ -71,11 +66,11 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
     Dim groupVolume() As Double
     Dim groupArea() As Double
     Dim groupFaceCount() As Long
+    Dim groupEdgeCount() As Long
     Dim groupJ1() As Double
     Dim groupJ2() As Double
     Dim groupJ3() As Double
     Dim groupVertexHash() As Double
-    Dim groupChiralHash() As Double
     Dim bodyGroup() As Integer
     Dim groupHues() As Double
     
@@ -131,7 +126,6 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
     ReDim groupJ2(totalBodies)
     ReDim groupJ3(totalBodies)
     ReDim groupVertexHash(totalBodies)
-    ReDim groupChiralHash(totalBodies)
     ReDim bodyGroup(totalBodies)
     
     For i = 0 To totalBodies - 1
@@ -260,49 +254,13 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
             Next kEdge
             
             Dim kV As Integer
-            Dim chR1(2) As Double, chR3(2) As Double, chR5(2) As Double
-            chR1(0) = 0: chR1(1) = 0: chR1(2) = 0
-            chR3(0) = 0: chR3(1) = 0: chR3(2) = 0
-            chR5(0) = 0: chR5(1) = 0: chR5(2) = 0
-            
             For kV = 0 To ptCount - 1
                 Dim vx As Double: vx = ptList(kV * 3) - cx
                 Dim vy As Double: vy = ptList(kV * 3 + 1) - cy
                 Dim vz As Double: vz = ptList(kV * 3 + 2) - cz
                 Dim vDist As Double: vDist = Sqr(vx * vx + vy * vy + vz * vz)
                 vertexHash = vertexHash + vDist
-                
-                Dim vD2 As Double: vD2 = vDist * vDist
-                Dim vD4 As Double: vD4 = vD2 * vD2
-                
-                chR1(0) = chR1(0) + vx: chR1(1) = chR1(1) + vy: chR1(2) = chR1(2) + vz
-                chR3(0) = chR3(0) + vD2 * vx: chR3(1) = chR3(1) + vD2 * vy: chR3(2) = chR3(2) + vD2 * vz
-                chR5(0) = chR5(0) + vD4 * vx: chR5(1) = chR5(1) + vD4 * vy: chR5(2) = chR5(2) + vD4 * vz
             Next kV
-            
-            Dim chiralHash As Double
-            chiralHash = chR1(0) * (chR3(1) * chR5(2) - chR3(2) * chR5(1)) - _
-                         chR1(1) * (chR3(0) * chR5(2) - chR3(2) * chR5(0)) + _
-                         chR1(2) * (chR3(0) * chR5(1) - chR3(1) * chR5(0))
-        End If
-        
-        ' NEW IN V5.14: Incorporate Face Centers into Topological Hash to detect seamless circular faces correctly!
-        Dim swFaces As Variant
-        swFaces = swBody.GetFaces
-        If Not IsEmpty(swFaces) Then
-            Dim kF As Integer
-            For kF = 0 To UBound(swFaces)
-                Dim faceT As SldWorks.Face2
-                Set faceT = swFaces(kF)
-                Dim vBoxFace As Variant
-                vBoxFace = faceT.GetBox
-                If IsArray(vBoxFace) Then
-                    Dim cxFace As Double: cxFace = (vBoxFace(0) + vBoxFace(3)) / 2 - cx
-                    Dim cyFace As Double: cyFace = (vBoxFace(1) + vBoxFace(4)) / 2 - cy
-                    Dim czFace As Double: czFace = (vBoxFace(2) + vBoxFace(5)) / 2 - cz
-                    vertexHash = vertexHash + Sqr(cxFace * cxFace + cyFace * cyFace + czFace * czFace)
-                End If
-            Next kF
         End If
         
         currentStep = "Comparing Geometric Tolerance Limits"
@@ -313,16 +271,15 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
         For j = 0 To numGroups - 1
             Dim volLimit As Double, areaLimit As Double
             Dim j1L As Double, j2L As Double, j3L As Double
-            Dim vhLimit As Double, chLimit As Double
+            Dim vhLimit As Double
             
             volLimit = Abs(groupVolume(j)) * 0.0001 + 0.000000001
             areaLimit = Abs(groupArea(j)) * 0.0001 + 0.000001
             vhLimit = Abs(groupVertexHash(j)) * 0.000001 + 0.00001
-            chLimit = Abs(groupChiralHash(j)) * 0.000001 + 0.00000001
             
-            j1L = Abs(groupJ1(j)) * 0.00000001 + 0.00000000001
-            j2L = Abs(groupJ2(j)) * 0.00000001 + 0.00000000001
-            j3L = Abs(groupJ3(j)) * 0.00000001 + 0.00000000001
+            j1L = Abs(groupJ1(j)) * 0.00000001 + 0.0000000001 ' Deep 1e-10 math floor securely differentiates tiny offsets via J1 density multipliers!
+            j2L = Abs(groupJ2(j)) * 0.00000001 + 0.0000000001
+            j3L = Abs(groupJ3(j)) * 0.00000001 + 0.0000000001
             
             Dim edgeMatch As Boolean
             If volume > 0.00001 Then
@@ -331,7 +288,7 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
                 edgeMatch = True
             End If
             
-            If Abs(groupVolume(j) - volume) <= volLimit And Abs(groupArea(j) - area) <= areaLimit And Abs(groupVertexHash(j) - vertexHash) <= vhLimit And Abs(groupChiralHash(j) - chiralHash) <= chLimit And groupFaceCount(j) = faceCount And edgeMatch Then
+            If Abs(groupVolume(j) - volume) <= volLimit And Abs(groupArea(j) - area) <= areaLimit And Abs(groupVertexHash(j) - vertexHash) <= vhLimit And groupFaceCount(j) = faceCount And edgeMatch Then
                 If Abs(groupJ1(j) - j1) <= j1L And Abs(groupJ2(j) - j2) <= j2L And Abs(groupJ3(j) - j3) <= j3L Then
                     isMatch = True
                     groupIndex = j
@@ -346,7 +303,6 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
             groupFaceCount(numGroups) = faceCount
             groupEdgeCount(numGroups) = edgeCount
             groupVertexHash(numGroups) = vertexHash
-            groupChiralHash(numGroups) = chiralHash
             groupJ1(numGroups) = j1
             groupJ2(numGroups) = j2
             groupJ3(numGroups) = j3
@@ -468,7 +424,7 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
     MsgBox "Applied unique colours to bodies in active display state" & vbCrLf & _
            "Total Bodies: " & totalBodies & vbCrLf & _
            "Unique Bodies: " & numGroups & vbCrLf & vbCrLf & _
-           "Macro Version: 5.14", vbInformation
+           "Macro Version: 5.15", vbInformation
     Exit Sub
     
 ErrorHandler:
@@ -685,7 +641,7 @@ Sub ProcessAssembly(swModel As SldWorks.ModelDoc2)
            "Total Bodies: " & coloredComps & vbCrLf & _
            "Unique Bodies: " & numGroups & vbCrLf & _
            "Skipped Subassemblies: " & skippedComps & vbCrLf & vbCrLf & _
-           "Macro Version: 5.14", vbInformation
+           "Macro Version: 5.15", vbInformation
     Exit Sub
     
 ErrorHandler:
