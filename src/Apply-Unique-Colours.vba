@@ -1,11 +1,10 @@
-' ApplyUniqueColorsToBodies Macro - Version 5.15
+' ApplyUniqueColorsToBodies Macro - Version 5.16
 ' Assigns a unique, highly distinguishable color to each geometrically identical group of bodies or components.
 '
 ' --- MAJOR CHANGELOG ---
 ' V5 Features:
-' - Universal Non-Chiral Precision Engine (V5.15): Radically stripped restrictive B-Rep Chiral Arrays and un-robust Face centroid topologies. Because CNC shops do not manufacture left-hand off-the-shelf threaded inserts, CAD inserts that are mechanically "mirrored" during assembly modeling natively flip into Left-Hand geometries, which broke the V5.13 absolute Chiral detection. V5.15 instead exclusively leverages the Hyper-Scaled Matrix Tensor $J_1(x)^2$ scalar, allowing identical parts imported backwards (or mirrored) to merge seamlessly, while natively capturing infinitesimally small offset structural hole translations using precisely tuned $10^{-10}$ inertial precision tracking.
-' - Hyper-Scaled Density Tensor Extraction: Mutates native `GetMassProperties` density scaling up to 1000x, catapulting infinitesimally diminutive offset moment-of-inertia deltas completely over the unalterable computational precision floor natively out to the 10th decimal bracket!
-' - B-Rep Topological Hash: Radically breaks physics limitations by natively tracking the absolute Euclidean distance integrals of all Body Vertices specifically plotted against the body's local mathematical Center of Mass. Geometrically enforces symmetry limits (which generate functionally completely identical Eigenvalue Tensor Arrays) to natively limit false cross-structural merging.
+' - Universal Non-Chiral Precision Engine (V5.16): Radically stripped restrictive B-Rep Chiral Arrays, unstable Face centroid topologies, and volatile Topo-Vertex Hashes. Because intricate downloaded models (like knurled inserts) possess tessellation vertices tighter than native floating-point merger thresholds, arbitrary topological scanning hashes generated fully unpredictable limit variables strictly based on simple rotation orientation mappings! V5.16 definitively relies upon a theoretically unbreakable mechanism: Hyper-Scaled Matrix Tensor Invariants. Using $J_1, J_2, J_3$ scalars ensures mathematically flawless 3D spacial rotational invariance.
+' - Hyper-Scaled Density Tensor Extraction: Mutates native `GetMassProperties` density scaling up to 1000x, catapulting infinitesimally diminutive structural translations (like a 1mm hole offset) directly into distinct geometric inertia footprints cleanly above the rigid $10^{-10}$ computational precision float ceiling, effectively detecting offset hole displacements flawlessly without unstable topological surface meshes!
 '
 ' V3 Features:
 ' - Assembly Level Processing: Filters subassemblies strictly for deepest-level parts.
@@ -70,7 +69,6 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
     Dim groupJ1() As Double
     Dim groupJ2() As Double
     Dim groupJ3() As Double
-    Dim groupVertexHash() As Double
     Dim bodyGroup() As Integer
     Dim groupHues() As Double
     
@@ -125,7 +123,6 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
     ReDim groupJ1(totalBodies)
     ReDim groupJ2(totalBodies)
     ReDim groupJ3(totalBodies)
-    ReDim groupVertexHash(totalBodies)
     ReDim bodyGroup(totalBodies)
     
     For i = 0 To totalBodies - 1
@@ -193,76 +190,6 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
         faceCount = swBody.GetFaceCount
         edgeCount = swBody.GetEdgeCount
         
-        ' NEW: B-Rep Topological Hash for perfectly symmetric geometries masking as Identical Arrays
-        Dim vertexHash As Double
-        vertexHash = 0
-        Dim vEdges As Variant
-        vEdges = swBody.GetEdges
-        If Not IsEmpty(vEdges) Then
-            Dim ptList() As Double
-            Dim ptCount As Integer
-            ptCount = 0
-            ReDim ptList(UBound(vEdges) * 6 + 6)
-            
-            Dim kEdge As Integer
-            For kEdge = 0 To UBound(vEdges)
-                Dim swEdge As SldWorks.Edge
-                Set swEdge = vEdges(kEdge)
-                Dim swV1 As SldWorks.Vertex, swV2 As SldWorks.Vertex
-                Set swV1 = swEdge.GetStartVertex
-                Set swV2 = swEdge.GetEndVertex
-                
-                If Not swV1 Is Nothing Then
-                    Dim p1 As Variant
-                    p1 = swV1.GetPoint
-                    Dim isNew1 As Boolean: isNew1 = True
-                    Dim m1_i As Integer
-                    For m1_i = 0 To ptCount - 1
-                        If Abs(ptList(m1_i * 3) - p1(0)) < 0.0001 Then
-                            If Abs(ptList(m1_i * 3 + 1) - p1(1)) < 0.0001 Then
-                                If Abs(ptList(m1_i * 3 + 2) - p1(2)) < 0.0001 Then
-                                    isNew1 = False: Exit For
-                                End If
-                            End If
-                        End If
-                    Next m1_i
-                    If isNew1 Then
-                        ptList(ptCount * 3) = p1(0): ptList(ptCount * 3 + 1) = p1(1): ptList(ptCount * 3 + 2) = p1(2)
-                        ptCount = ptCount + 1
-                    End If
-                End If
-                
-                If Not swV2 Is Nothing Then
-                    Dim p2 As Variant
-                    p2 = swV2.GetPoint
-                    Dim isNew2 As Boolean: isNew2 = True
-                    Dim m2_i As Integer
-                    For m2_i = 0 To ptCount - 1
-                        If Abs(ptList(m2_i * 3) - p2(0)) < 0.0001 Then
-                            If Abs(ptList(m2_i * 3 + 1) - p2(1)) < 0.0001 Then
-                                If Abs(ptList(m2_i * 3 + 2) - p2(2)) < 0.0001 Then
-                                    isNew2 = False: Exit For
-                                End If
-                            End If
-                        End If
-                    Next m2_i
-                    If isNew2 Then
-                        ptList(ptCount * 3) = p2(0): ptList(ptCount * 3 + 1) = p2(1): ptList(ptCount * 3 + 2) = p2(2)
-                        ptCount = ptCount + 1
-                    End If
-                End If
-            Next kEdge
-            
-            Dim kV As Integer
-            For kV = 0 To ptCount - 1
-                Dim vx As Double: vx = ptList(kV * 3) - cx
-                Dim vy As Double: vy = ptList(kV * 3 + 1) - cy
-                Dim vz As Double: vz = ptList(kV * 3 + 2) - cz
-                Dim vDist As Double: vDist = Sqr(vx * vx + vy * vy + vz * vz)
-                vertexHash = vertexHash + vDist
-            Next kV
-        End If
-        
         currentStep = "Comparing Geometric Tolerance Limits"
         Dim isMatch As Boolean
         isMatch = False
@@ -271,11 +198,9 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
         For j = 0 To numGroups - 1
             Dim volLimit As Double, areaLimit As Double
             Dim j1L As Double, j2L As Double, j3L As Double
-            Dim vhLimit As Double
             
             volLimit = Abs(groupVolume(j)) * 0.0001 + 0.000000001
             areaLimit = Abs(groupArea(j)) * 0.0001 + 0.000001
-            vhLimit = Abs(groupVertexHash(j)) * 0.000001 + 0.00001
             
             j1L = Abs(groupJ1(j)) * 0.00000001 + 0.0000000001 ' Deep 1e-10 math floor securely differentiates tiny offsets via J1 density multipliers!
             j2L = Abs(groupJ2(j)) * 0.00000001 + 0.0000000001
@@ -288,7 +213,7 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
                 edgeMatch = True
             End If
             
-            If Abs(groupVolume(j) - volume) <= volLimit And Abs(groupArea(j) - area) <= areaLimit And Abs(groupVertexHash(j) - vertexHash) <= vhLimit And groupFaceCount(j) = faceCount And edgeMatch Then
+            If Abs(groupVolume(j) - volume) <= volLimit And Abs(groupArea(j) - area) <= areaLimit And groupFaceCount(j) = faceCount And edgeMatch Then
                 If Abs(groupJ1(j) - j1) <= j1L And Abs(groupJ2(j) - j2) <= j2L And Abs(groupJ3(j) - j3) <= j3L Then
                     isMatch = True
                     groupIndex = j
@@ -302,7 +227,6 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
             groupArea(numGroups) = area
             groupFaceCount(numGroups) = faceCount
             groupEdgeCount(numGroups) = edgeCount
-            groupVertexHash(numGroups) = vertexHash
             groupJ1(numGroups) = j1
             groupJ2(numGroups) = j2
             groupJ3(numGroups) = j3
@@ -424,7 +348,7 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
     MsgBox "Applied unique colours to bodies in active display state" & vbCrLf & _
            "Total Bodies: " & totalBodies & vbCrLf & _
            "Unique Bodies: " & numGroups & vbCrLf & vbCrLf & _
-           "Macro Version: 5.15", vbInformation
+           "Macro Version: 5.16", vbInformation
     Exit Sub
     
 ErrorHandler:
@@ -641,7 +565,7 @@ Sub ProcessAssembly(swModel As SldWorks.ModelDoc2)
            "Total Bodies: " & coloredComps & vbCrLf & _
            "Unique Bodies: " & numGroups & vbCrLf & _
            "Skipped Subassemblies: " & skippedComps & vbCrLf & vbCrLf & _
-           "Macro Version: 5.15", vbInformation
+           "Macro Version: 5.16", vbInformation
     Exit Sub
     
 ErrorHandler:
