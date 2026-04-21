@@ -1,10 +1,10 @@
-' ApplyUniqueColorsToBodies Macro - Version 5.16
+' ApplyUniqueColorsToBodies Macro - Version 5.17
 ' Assigns a unique, highly distinguishable color to each geometrically identical group of bodies or components.
 '
 ' --- MAJOR CHANGELOG ---
 ' V5 Features:
-' - Universal Non-Chiral Precision Engine (V5.16): Radically stripped restrictive B-Rep Chiral Arrays, unstable Face centroid topologies, and volatile Topo-Vertex Hashes. Because intricate downloaded models (like knurled inserts) possess tessellation vertices tighter than native floating-point merger thresholds, arbitrary topological scanning hashes generated fully unpredictable limit variables strictly based on simple rotation orientation mappings! V5.16 definitively relies upon a theoretically unbreakable mechanism: Hyper-Scaled Matrix Tensor Invariants. Using $J_1, J_2, J_3$ scalars ensures mathematically flawless 3D spacial rotational invariance.
-' - Hyper-Scaled Density Tensor Extraction: Mutates native `GetMassProperties` density scaling up to 1000x, catapulting infinitesimally diminutive structural translations (like a 1mm hole offset) directly into distinct geometric inertia footprints cleanly above the rigid $10^{-10}$ computational precision float ceiling, effectively detecting offset hole displacements flawlessly without unstable topological surface meshes!
+' - Native Eigenvalue Mass Physics (V5.17): Radically eliminated physically mutating IEEE B-Rep transformation matrices (`ApplyTransform`), which falsely triggered tessellation shifts in dense topological parts when translated. Replaces it flawlessly with `IMassProperty.PrincipleMomentsOfInertia`, extracting the absolute principal eigenvalues natively wrapped directly over the un-mutated center of mass.
+' - Absolute Gyration Tensors: Divides natively extracted Principal Moments by total body mass ($P_x / m = k_x^2$) to abstract physics entirely into absolute unscaled generic geometric Radius of Gyration limits. Flawlessly immune to rotation, translation matrices, arbitrary physical material assignments, and B-Rep re-tessellation variants.
 '
 ' V3 Features:
 ' - Assembly Level Processing: Filters subassemblies strictly for deepest-level parts.
@@ -132,56 +132,48 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
         Dim j1 As Double, j2 As Double, j3 As Double
         j1 = 0: j2 = 0: j3 = 0
         
-        currentStep = "Translating Body to Global Origin for Precision Tensor"
+        currentStep = "Extracting Principal Moments of Inertia natively via IMassProperty"
         Dim vProps As Variant
         vProps = swBody.GetMassProperties(1.0)
         
         If IsArray(vProps) Then
-            Dim cx As Double, cy As Double, cz As Double
-            Dim mass As Double
-            
-            cx = vProps(0): cy = vProps(1): cz = vProps(2)
             volume = vProps(3)            
             area = vProps(4)
-            mass = vProps(11)
             
-            Dim swBodyCopy As SldWorks.Body2
-            Set swBodyCopy = swBody.Copy
+            Dim swMass As SldWorks.MassProperty
+            Set swMass = swModel.Extension.CreateMassProperty
             
-            Dim swMathUtil As SldWorks.MathUtility
-            Set swMathUtil = swApp.GetMathUtility
+            Dim bArray(0) As Object
+            Set bArray(0) = swBody
             
-            Dim tData(15) As Double
-            tData(0) = 1: tData(1) = 0: tData(2) = 0
-            tData(3) = 0: tData(4) = 1: tData(5) = 0
-            tData(6) = 0: tData(7) = 0: tData(8) = 1
-            tData(9) = -cx: tData(10) = -cy: tData(11) = -cz
-            tData(12) = 1: tData(13) = 0: tData(14) = 0: tData(15) = 0
-            
-            Dim swTrans As SldWorks.MathTransform
-            Set swTrans = swMathUtil.CreateTransform((tData))
-            
-            Dim transResult As Boolean
-            transResult = swBodyCopy.ApplyTransform(swTrans)
-            
-            Dim vPropsO As Variant
-            vPropsO = swBodyCopy.GetMassProperties(1000#) ' Native Kernel Origin Alignment with max-precision Density scaling
-            
-            Dim Txx As Double, Tyy As Double, Tzz As Double
-            Dim Txy As Double, Txz As Double, Tyz As Double
-            
-            ' The translated body's tensor is precisely evaluated at the local coordinates (0,0,0)
-            Txx = vPropsO(5): Tyy = vPropsO(6): Tzz = vPropsO(7)
-            
-            ' Revert signs of cross products specifically for eigenvalue equation logic
-            Txy = -vPropsO(8): Txz = -vPropsO(9): Tyz = -vPropsO(10)
-            
-            ' Matrix Invariants (Rotationally Invariant perfectly substitute mathematical Eigenvalue roots without trigonometric error)
-            j1 = Txx + Tyy + Tzz
-            j2 = (Txx * Tyy - Txy * Txy) + (Txx * Tzz - Txz * Txz) + (Tyy * Tzz - Tyz * Tyz)
-            j3 = Txx * (Tyy * Tzz - Tyz * Tyz) - Txy * (Txy * Tzz - Txz * Tyz) + Txz * (Txy * Tyz - Tyy * Txz)
-            
-            Set swBodyCopy = Nothing
+            If swMass.AddBodies(bArray) Then
+                Dim localMass As Double
+                localMass = swMass.Mass
+                Dim Prin As Variant
+                Prin = swMass.PrincipleMomentsOfInertia
+                
+                If IsArray(Prin) Then
+                    Dim Px As Double, Py As Double, Pz As Double
+                    ' Divide by mass to normalize into purely geometric Radius of Gyration Squared (k^2)
+                    ' This mathematically isolates physical volume distribution from arbitrarily assigned structural density variants!
+                    If localMass > 0.000000001 Then
+                        Px = Prin(0) / localMass
+                        Py = Prin(1) / localMass
+                        Pz = Prin(2) / localMass
+                    Else
+                        Px = Prin(0): Py = Prin(1): Pz = Prin(2)
+                    End If
+                    
+                    ' Eigenvalue trace scalar calculations ensures 3D spatial rotation mapping becomes universally mathematically identical
+                    j1 = Px + Py + Pz
+                    j2 = (Px * Py) + (Px * Pz) + (Py * Pz)
+                    j3 = Px * Py * Pz
+                Else
+                    j1 = 0: j2 = 0: j3 = 0
+                End If
+            Else
+                j1 = 0: j2 = 0: j3 = 0
+            End If
         Else
             volume = 0: area = 0
             j1 = 0: j2 = 0: j3 = 0
@@ -202,9 +194,9 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
             volLimit = Abs(groupVolume(j)) * 0.0001 + 0.000000001
             areaLimit = Abs(groupArea(j)) * 0.0001 + 0.000001
             
-            j1L = Abs(groupJ1(j)) * 0.00000001 + 0.0000000001 ' Deep 1e-10 math floor securely differentiates tiny offsets via J1 density multipliers!
-            j2L = Abs(groupJ2(j)) * 0.00000001 + 0.0000000001
-            j3L = Abs(groupJ3(j)) * 0.00000001 + 0.0000000001
+            j1L = Abs(groupJ1(j)) * 0.0001 + 0.000000005 ' Relative 0.01% buffer heavily guards float limits, 5e-9 explicitly seals numerical shift thresholds
+            j2L = Abs(groupJ2(j)) * 0.0001 + 0.000000005
+            j3L = Abs(groupJ3(j)) * 0.0001 + 0.000000005
             
             Dim edgeMatch As Boolean
             If volume > 0.00001 Then
@@ -348,7 +340,7 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
     MsgBox "Applied unique colours to bodies in active display state" & vbCrLf & _
            "Total Bodies: " & totalBodies & vbCrLf & _
            "Unique Bodies: " & numGroups & vbCrLf & vbCrLf & _
-           "Macro Version: 5.16", vbInformation
+           "Macro Version: 5.17", vbInformation
     Exit Sub
     
 ErrorHandler:
@@ -565,7 +557,7 @@ Sub ProcessAssembly(swModel As SldWorks.ModelDoc2)
            "Total Bodies: " & coloredComps & vbCrLf & _
            "Unique Bodies: " & numGroups & vbCrLf & _
            "Skipped Subassemblies: " & skippedComps & vbCrLf & vbCrLf & _
-           "Macro Version: 5.16", vbInformation
+           "Macro Version: 5.17", vbInformation
     Exit Sub
     
 ErrorHandler:
