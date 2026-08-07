@@ -1,20 +1,42 @@
-' ApplyUniqueColorsToBodies Macro - Version 5.17
-' Assigns a unique, highly distinguishable color to each geometrically identical group of bodies or components.
+'==============================================================================
+' Apply Unique Colours
 '
-' --- MAJOR CHANGELOG ---
-' V5 Features:
-' - Native Eigenvalue Mass Physics (V5.17): Radically eliminated physically mutating IEEE B-Rep transformation matrices (`ApplyTransform`), which falsely triggered tessellation shifts in dense topological parts when translated. Replaces it flawlessly with `IMassProperty.PrincipleMomentsOfInertia`, extracting the absolute principal eigenvalues natively wrapped directly over the un-mutated center of mass.
-' - Absolute Gyration Tensors: Divides natively extracted Principal Moments by total body mass ($P_x / m = k_x^2$) to abstract physics entirely into absolute unscaled generic geometric Radius of Gyration limits. Flawlessly immune to rotation, translation matrices, arbitrary physical material assignments, and B-Rep re-tessellation variants.
+' Assigns a distinct, high-contrast colour to every geometrically unique body
+' in a part, or to every unique component in an assembly. Bodies or components
+' that are identical to one another share a colour, so anything that differs
+' stands out immediately on screen.
 '
-' V3 Features:
-' - Assembly Level Processing: Filters subassemblies strictly for deepest-level parts.
-' - Face Appearance override checks to prevent accidental body collisions.
+' In a part, bodies are grouped by volume, surface area, face count, edge count
+' and their principal moments of inertia normalised by mass. Normalising by mass
+' makes the comparison independent of where a body sits in space, how it is
+' rotated, and which material is assigned to it.
 '
-' V2 Features:
-' - Recognise like bodies using Geometric Pattern Grouping (Volume, Area, Face Count).
+' In an assembly, components are grouped by file path and referenced
+' configuration. Subassemblies are skipped; only bottom-level parts are
+' coloured.
 '
-' V1 Features:
-' - Base sequential HSV generation.
+' Colours are written to the active display state only, so other display states
+' and configurations are left untouched. Colours already present on faces and
+' components are detected and avoided when the palette is generated.
+'
+' To use, open a part or assembly document and run the macro.
+'
+'   Version   0.5.18
+'   Date      2026-08-07
+'   Author    James Debono
+'
+'------------------------------------------------------------------------------
+' CHANGELOG (summary - see CHANGELOG.md for the full history)
+'
+'   0.5.x   Body grouping driven by the mass-normalised principal moments of
+'           inertia, invariant to position, orientation and material density.
+'   0.4.x   Adaptive equidistant colour engine with interleaved saturation and
+'           brightness layers. Colours applied through display states.
+'   0.3.x   Assembly support, restricted to bottom-level parts. Existing face
+'           colours avoided.
+'   0.2.x   Identical bodies grouped by volume, surface area and face count.
+'   0.1.x   Initial release. Sequential HSV colour per body.
+'==============================================================================
 
 Dim swApp As SldWorks.SldWorks
 
@@ -340,7 +362,7 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
     MsgBox "Applied unique colours to bodies in active display state" & vbCrLf & _
            "Total Bodies: " & totalBodies & vbCrLf & _
            "Unique Bodies: " & numGroups & vbCrLf & vbCrLf & _
-           "Macro Version: 5.17", vbInformation
+           "Macro Version: 0.5.18", vbInformation
     Exit Sub
     
 ErrorHandler:
@@ -557,7 +579,7 @@ Sub ProcessAssembly(swModel As SldWorks.ModelDoc2)
            "Total Bodies: " & coloredComps & vbCrLf & _
            "Unique Bodies: " & numGroups & vbCrLf & _
            "Skipped Subassemblies: " & skippedComps & vbCrLf & vbCrLf & _
-           "Macro Version: 5.17", vbInformation
+           "Macro Version: 0.5.18", vbInformation
     Exit Sub
     
 ErrorHandler:
