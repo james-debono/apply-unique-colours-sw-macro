@@ -25,7 +25,7 @@
 '
 ' To use, open a part or assembly document and run the macro.
 '
-'   Version   0.7.0
+'   Version   0.8.0
 '   Date      2026-08-07
 '   Author    James Debono
 '
@@ -53,10 +53,13 @@ Option Explicit
 ' other. Set to False to force the numeric invariant method used up to 0.5.18.
 Const USE_KERNEL_COMPARISON As Boolean = True
 
-' Also match a body against the mirror image of another body, so that mirrored
-' copies of the same hardware share a colour. Off by default: it costs an extra
-' body copy for every comparison that fails, and it will merge genuine
-' left-hand / right-hand pairs that you may want kept apart.
+' Give mirrored copies of a body the same colour as the original.
+'
+' The geometry kernel treats a mirror image as coincident, so this is on by
+' default in SOLIDWORKS itself. Left off here, because a mirrored part is
+' usually a genuinely different part: a bracket and its opposite hand are not
+' interchangeable on the shop floor even though their geometry matches. Turn it
+' on if mirrored instances of the same hardware should read as one part.
 Const MATCH_MIRRORED As Boolean = False
 
 ' Shift generated colours away from colours already applied to individual faces.
@@ -102,7 +105,7 @@ Const SHAPE_FALLBACK As Boolean = True
 ' below any feature displacement worth colouring differently.
 Const SHAPE_TOLERANCE As Double = 0.000001
 
-Const MACRO_VERSION As String = "0.7.0"
+Const MACRO_VERSION As String = "0.8.0"
 
 ' Perceived brightness of each colour layer, darkest usable to lightest.
 ' Values are relative luminance, 0 = black, 1 = white.
@@ -282,10 +285,12 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
     Dim gateRejects As Long
     Dim notCoincident As Long
     Dim shapeMerges As Long
+    Dim mirrorSplits As Long
     comparisons = 0
     gateRejects = 0
     notCoincident = 0
     shapeMerges = 0
+    mirrorSplits = 0
 
     ' Bucket groups by face count. Bodies with different face counts can never
     ' match, so this keeps the expensive comparison off almost every pair.
@@ -317,19 +322,43 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
                 If SimilarSize(bodyVolume(i), bodyVolume(rep), _
                                bodyArea(i), bodyArea(rep)) Then
                     comparisons = comparisons + 1
+
+                    Dim swRepBody As SldWorks.Body2
+                    Set swRepBody = vBodies(rep)
+
                     Dim isSame As Boolean
+                    Dim verdict As Long
                     If useKernel Then
-                        isSame = BodiesCoincide(swBody, vBodies(rep))
+                        verdict = CompareBodies(swBody, swRepBody)
+                        If verdict = 1 Then
+                            isSame = True
+                        ElseIf verdict = -1 Then
+                            ' Same shape, opposite hand.
+                            isSame = MATCH_MIRRORED
+                            If Not isSame Then
+                                mirrorSplits = mirrorSplits + 1
+                                If SHOW_DIAGNOSTICS Then
+                                    Debug.Print "mirror image, kept apart: " & swBody.Name & _
+                                                "  vs  " & swRepBody.Name
+                                End If
+                            End If
+                        Else
+                            isSame = False
+                        End If
                     Else
+                        verdict = 0
                         isSame = InvariantsMatch(bodyJ1(i), bodyJ2(i), bodyJ3(i), _
                                                  bodyJ1(rep), bodyJ2(rep), bodyJ3(rep), _
                                                  bodyEdges(i), bodyEdges(rep), _
                                                  bodyVolume(i))
                     End If
-                    Dim swRepBody As SldWorks.Body2
-                    Set swRepBody = vBodies(rep)
 
-                    If Not isSame And useKernel Then
+                    ' The shape fallback runs only when the kernel found no
+                    ' transform at all. A mirror we have just chosen to keep
+                    ' apart must not reach it: distances from the centre of mass
+                    ' are identical either side of a mirror, so it would undo the
+                    ' decision immediately.
+                    If Not isSame And useKernel And verdict = 0 Then
                         ' The kernel says these are different shapes. Its answer
                         ' carries a tolerance, though, and copies of one imported
                         ' part re-derived by separate features land outside it.
@@ -495,6 +524,7 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
               "Kernel comparisons: " & comparisons & vbCrLf & _
               "  of which not coincident: " & notCoincident & vbCrLf & _
               "  rescued by shape match: " & shapeMerges & vbCrLf & _
+              "Mirror images kept apart: " & mirrorSplits & vbCrLf & _
               "Skipped by size gate: " & gateRejects & vbCrLf & _
               "Coloured: " & colouredBodies & " of " & totalBodies & vbCrLf & _
               "Measure: " & Format(tMeasured - tStart, "0.00") & " s" & vbCrLf & _
@@ -690,63 +720,63 @@ NotSupported:
     KernelComparisonWorks = False
 End Function
 
-' True if one body can be moved onto the other. This is the kernel's own answer,
-' so it is exact: no tolerance is involved and no feature size is too small.
-Function BodiesCoincide(ByVal bodyA As SldWorks.Body2, ByVal bodyB As SldWorks.Body2) As Boolean
+' Asks the kernel whether one body can be moved onto the other, and reports what
+' kind of movement it took. This is the kernel's own answer, so the match itself
+' is exact - no tolerance is involved and no feature size is too small.
+'
+' Returns:
+'    1  the same shape, same handedness
+'    0  no transform exists between them
+'   -1  the same shape, but only as a mirror image
+Function CompareBodies(ByVal bodyA As SldWorks.Body2, ByVal bodyB As SldWorks.Body2) As Long
     On Error GoTo Failed
 
     Dim swXform As SldWorks.MathTransform
-    If bodyA.GetCoincidenceTransform2(bodyB, swXform) Then
-        BodiesCoincide = True
+    If Not bodyA.GetCoincidenceTransform2(bodyB, swXform) Then
+        CompareBodies = 0
         Exit Function
     End If
 
-    If MATCH_MIRRORED Then
-        Dim swMirrored As SldWorks.Body2
-        Set swMirrored = MirroredCopy(bodyA)
-        If Not swMirrored Is Nothing Then
-            BodiesCoincide = swMirrored.GetCoincidenceTransform2(bodyB, swXform)
-            Exit Function
-        End If
+    If TransformIsReflection(swXform) Then
+        CompareBodies = -1
+    Else
+        CompareBodies = 1
     End If
-
-    BodiesCoincide = False
     Exit Function
 
 Failed:
-    BodiesCoincide = False
+    CompareBodies = 0
 End Function
 
-' A transient mirrored copy of a body. The source body is never modified and the
-' copy is discarded by VBA once the caller releases it.
-Function MirroredCopy(ByVal swBody As SldWorks.Body2) As SldWorks.Body2
+' True when the transform turns a body inside out rather than simply moving it.
+'
+' The kernel counts a mirror image as coincident and returns a transform that
+' includes the reflection, so the two cases can be told apart exactly: the
+' determinant of a rotation matrix is always +1, and a reflection makes it -1.
+' No handedness heuristic is needed, which is what made this awkward in 0.5.13.
+Function TransformIsReflection(ByVal swXform As SldWorks.MathTransform) As Boolean
     On Error GoTo Failed
 
-    Dim swCopy As SldWorks.Body2
-    Set swCopy = swBody.Copy
+    TransformIsReflection = False
+    If swXform Is Nothing Then Exit Function
 
-    Dim swMathUtil As SldWorks.MathUtility
-    Set swMathUtil = swApp.GetMathUtility
+    Dim v As Variant
+    v = swXform.ArrayData
+    If Not IsArray(v) Then Exit Function
+    If UBound(v) < 8 Then Exit Function
 
-    Dim tData(15) As Double
-    tData(0) = -1: tData(1) = 0: tData(2) = 0
-    tData(3) = 0: tData(4) = 1: tData(5) = 0
-    tData(6) = 0: tData(7) = 0: tData(8) = 1
-    tData(9) = 0: tData(10) = 0: tData(11) = 0
-    tData(12) = 1: tData(13) = 0: tData(14) = 0: tData(15) = 0
+    ' ArrayData holds the 3x3 rotation in elements 0 to 8, translation in 9 to 11
+    ' and a scale factor in 12.
+    Dim det As Double
+    det = CDbl(v(0)) * (CDbl(v(4)) * CDbl(v(8)) - CDbl(v(5)) * CDbl(v(7))) _
+        - CDbl(v(1)) * (CDbl(v(3)) * CDbl(v(8)) - CDbl(v(5)) * CDbl(v(6))) _
+        + CDbl(v(2)) * (CDbl(v(3)) * CDbl(v(7)) - CDbl(v(4)) * CDbl(v(6)))
 
-    Dim swTrans As SldWorks.MathTransform
-    Set swTrans = swMathUtil.CreateTransform((tData))
-
-    If swCopy.ApplyTransform(swTrans) Then
-        Set MirroredCopy = swCopy
-    Else
-        Set MirroredCopy = Nothing
-    End If
+    TransformIsReflection = (det < 0#)
     Exit Function
 
 Failed:
-    Set MirroredCopy = Nothing
+    TransformIsReflection = False
 End Function
 
 ' Cheap gate applied before the expensive comparison. Its only job is to skip
