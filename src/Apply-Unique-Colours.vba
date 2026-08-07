@@ -6,10 +6,11 @@
 ' that are identical to one another share a colour, so anything that differs
 ' stands out immediately on screen.
 '
-' In a part, two bodies are treated as the same only if the SOLIDWORKS geometry
-' kernel can move one onto the other. Position and orientation are therefore
-' irrelevant, while a genuine difference of any size - a hole moved a fraction
-' of a millimetre - separates them.
+' In a part, two bodies are treated as the same if the SOLIDWORKS geometry kernel
+' can move one onto the other, or failing that if every vertex sits the same
+' distance from the body's centre of mass to within a micron. Position and
+' orientation are therefore irrelevant, while a genuine difference - a hole moved
+' a fraction of a millimetre - separates them.
 '
 ' In an assembly, components are grouped by file path and referenced
 ' configuration. Subassemblies are skipped; only bottom-level parts are
@@ -24,7 +25,7 @@
 '
 ' To use, open a part or assembly document and run the macro.
 '
-'   Version   0.6.3
+'   Version   0.7.0
 '   Date      2026-08-07
 '   Author    James Debono
 '
@@ -80,7 +81,28 @@ Const SHOW_DIAGNOSTICS As Boolean = True
 ' while leaving the match decision where it belongs - with the kernel.
 Const SIZE_GATE_TOLERANCE As Double = 0.001
 
-Const MACRO_VERSION As String = "0.6.3"
+' When the kernel reports two bodies are not coincident, compare their shape
+' directly as a second opinion: the sorted distances of every vertex from the
+' body's centre of mass, matched term by term.
+'
+' This exists because the kernel's comparison carries a tolerance of its own, and
+' hardware imported through several separate insert-part features falls just
+' outside it. The same rivet nut derived twice was measured nine parts per
+' million apart in volume - a few tens of nanometres of geometry.
+'
+' Aggregate measurements cannot tell that apart from a real difference, and in
+' fact get it backwards: two tubes with a hole in different places have volumes
+' agreeing to fifteen decimal places, because moving a hole removes exactly as
+' much material as before. Vertex positions do not have that blind spot - a hole
+' that moves takes its vertices with it.
+Const SHAPE_FALLBACK As Boolean = True
+
+' How far two corresponding vertices may sit apart, in metres. One micron is far
+' above the tens of nanometres separating re-derived copies of one part, and far
+' below any feature displacement worth colouring differently.
+Const SHAPE_TOLERANCE As Double = 0.000001
+
+Const MACRO_VERSION As String = "0.7.0"
 
 ' Perceived brightness of each colour layer, darkest usable to lightest.
 ' Values are relative luminance, 0 = black, 1 = white.
@@ -192,20 +214,34 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
     ' --- Measure every body once ----------------------------------------------
     currentStep = "Measuring bodies"
     Dim bodyVolume() As Double, bodyArea() As Double, bodyFaces() As Long
+    Dim bodyCX() As Double, bodyCY() As Double, bodyCZ() As Double
     ReDim bodyVolume(totalBodies - 1)
     ReDim bodyArea(totalBodies - 1)
     ReDim bodyFaces(totalBodies - 1)
+    ReDim bodyCX(totalBodies - 1)
+    ReDim bodyCY(totalBodies - 1)
+    ReDim bodyCZ(totalBodies - 1)
 
     Dim vProps As Variant
     For i = 0 To totalBodies - 1
         Set swBody = vBodies(i)
         vProps = swBody.GetMassProperties(1#)
         If IsArray(vProps) Then
+            bodyCX(i) = vProps(0)
+            bodyCY(i) = vProps(1)
+            bodyCZ(i) = vProps(2)
             bodyVolume(i) = vProps(3)
             bodyArea(i) = vProps(4)
         End If
         bodyFaces(i) = swBody.GetFaceCount()
     Next i
+
+    ' Vertex signatures are expensive, so they are built only for the bodies that
+    ' actually reach the shape fallback, and kept once built.
+    Dim sigCache() As Variant
+    Dim sigBuilt() As Boolean
+    ReDim sigCache(totalBodies - 1)
+    ReDim sigBuilt(totalBodies - 1)
 
     ' Decide which comparison engine to use. The kernel test is exact; the
     ' invariant test is the 0.5.18 fallback for builds that do not expose it.
@@ -245,9 +281,11 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
     Dim comparisons As Long
     Dim gateRejects As Long
     Dim notCoincident As Long
+    Dim shapeMerges As Long
     comparisons = 0
     gateRejects = 0
     notCoincident = 0
+    shapeMerges = 0
 
     ' Bucket groups by face count. Bodies with different face counts can never
     ' match, so this keeps the expensive comparison off almost every pair.
@@ -288,18 +326,17 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
                                                  bodyEdges(i), bodyEdges(rep), _
                                                  bodyVolume(i))
                     End If
-                    If isSame Then
-                        matched = True
-                        groupIndex = g
-                        Exit For
-                    Else
-                        ' Passed the size gate but the kernel still says these
-                        ' are different shapes. Worth seeing: it is the line
-                        ' between "same part" and "same size, different part".
+                    Dim swRepBody As SldWorks.Body2
+                    Set swRepBody = vBodies(rep)
+
+                    If Not isSame And useKernel Then
+                        ' The kernel says these are different shapes. Its answer
+                        ' carries a tolerance, though, and copies of one imported
+                        ' part re-derived by separate features land outside it.
+                        ' Ask the geometry directly before accepting the verdict.
                         notCoincident = notCoincident + 1
+
                         If SHOW_DIAGNOSTICS Then
-                            Dim swRepBody As SldWorks.Body2
-                            Set swRepBody = vBodies(rep)
                             Debug.Print "not coincident: " & swBody.Name & _
                                         "  vs  " & swRepBody.Name & _
                                         "   dVolume=" & _
@@ -307,6 +344,34 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
                                         "   dArea=" & _
                                         Format(RelDiff(bodyArea(i), bodyArea(rep)), "0.00E+00")
                         End If
+
+                        If SHAPE_FALLBACK Then
+                            If Not sigBuilt(i) Then
+                                sigCache(i) = VertexSignature(swBody, _
+                                    bodyCX(i), bodyCY(i), bodyCZ(i))
+                                sigBuilt(i) = True
+                            End If
+                            If Not sigBuilt(rep) Then
+                                sigCache(rep) = VertexSignature(swRepBody, _
+                                    bodyCX(rep), bodyCY(rep), bodyCZ(rep))
+                                sigBuilt(rep) = True
+                            End If
+
+                            If SignaturesMatch(sigCache(i), sigCache(rep), SHAPE_TOLERANCE) Then
+                                isSame = True
+                                shapeMerges = shapeMerges + 1
+                                If SHOW_DIAGNOSTICS Then
+                                    Debug.Print "   -> merged by shape: every vertex within " & _
+                                                Format(SHAPE_TOLERANCE * 1000000#, "0.0") & " micron"
+                                End If
+                            End If
+                        End If
+                    End If
+
+                    If isSame Then
+                        matched = True
+                        groupIndex = g
+                        Exit For
                     End If
                 Else
                     gateRejects = gateRejects + 1
@@ -429,6 +494,7 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
               "Engine: " & IIf(useKernel, "geometry kernel", "shape invariants") & vbCrLf & _
               "Kernel comparisons: " & comparisons & vbCrLf & _
               "  of which not coincident: " & notCoincident & vbCrLf & _
+              "  rescued by shape match: " & shapeMerges & vbCrLf & _
               "Skipped by size gate: " & gateRejects & vbCrLf & _
               "Coloured: " & colouredBodies & " of " & totalBodies & vbCrLf & _
               "Measure: " & Format(tMeasured - tStart, "0.00") & " s" & vbCrLf & _
@@ -701,6 +767,102 @@ Function RelDiff(ByVal a As Double, ByVal b As Double) As Double
     Else
         RelDiff = Abs(a - b) / Abs(b)
     End If
+End Function
+
+'--- Shape comparison ---------------------------------------------------------
+
+' The sorted distances of every vertex from the body's centre of mass.
+'
+' Moving or rotating a body changes neither the centre of mass relative to the
+' body nor the distances to it, so two instances of one part sitting anywhere in
+' the model produce the same list. Moving a feature does change it, because the
+' vertices around that feature move and the centre of mass shifts with them.
+'
+' The distances are held individually and compared term by term rather than
+' summed. Earlier attempts at this idea (0.5.12) added the distances together
+' with fourth-power weighting, which buried small differences in accumulated
+' rounding and made the result depend on how many vertices a body happened to
+' have.
+Function VertexSignature(ByVal swBody As SldWorks.Body2, ByVal cx As Double, _
+                         ByVal cy As Double, ByVal cz As Double) As Variant
+    On Error GoTo Failed
+
+    Dim vVerts As Variant
+    vVerts = swBody.GetVertices()
+    If IsEmpty(vVerts) Then GoTo Failed
+
+    Dim n As Long
+    n = UBound(vVerts) + 1
+    If n < 1 Then GoTo Failed
+
+    Dim d() As Double
+    ReDim d(n - 1)
+
+    Dim i As Long
+    Dim swVertex As SldWorks.Vertex
+    Dim vPt As Variant
+    Dim dx As Double, dy As Double, dz As Double
+
+    For i = 0 To n - 1
+        Set swVertex = vVerts(i)
+        vPt = swVertex.GetPoint()
+        dx = vPt(0) - cx
+        dy = vPt(1) - cy
+        dz = vPt(2) - cz
+        d(i) = Sqr(dx * dx + dy * dy + dz * dz)
+    Next i
+
+    SortDoubles d
+    VertexSignature = d
+    Exit Function
+
+Failed:
+    VertexSignature = Empty
+End Function
+
+' Shell sort. The distances must be in a canonical order before two bodies can be
+' compared term by term, since the kernel gives no guarantee about vertex order.
+Sub SortDoubles(ByRef d() As Double)
+    Dim n As Long, gap As Long, i As Long, j As Long
+    Dim tmp As Double
+
+    n = UBound(d) + 1
+    gap = n \ 2
+
+    Do While gap > 0
+        For i = gap To n - 1
+            tmp = d(i)
+            j = i
+            Do While j >= gap
+                If d(j - gap) > tmp Then
+                    d(j) = d(j - gap)
+                    j = j - gap
+                Else
+                    Exit Do
+                End If
+            Loop
+            d(j) = tmp
+        Next i
+        gap = gap \ 2
+    Loop
+End Sub
+
+' Two signatures match when they hold the same number of vertices and every
+' corresponding distance agrees within the tolerance.
+Function SignaturesMatch(ByVal sigA As Variant, ByVal sigB As Variant, _
+                         ByVal tol As Double) As Boolean
+    SignaturesMatch = False
+
+    If IsEmpty(sigA) Or IsEmpty(sigB) Then Exit Function
+    If Not IsArray(sigA) Or Not IsArray(sigB) Then Exit Function
+    If UBound(sigA) <> UBound(sigB) Then Exit Function
+
+    Dim i As Long
+    For i = 0 To UBound(sigA)
+        If Abs(sigA(i) - sigB(i)) > tol Then Exit Function
+    Next i
+
+    SignaturesMatch = True
 End Function
 
 '--- Fallback engine (0.5.18 shape invariants) --------------------------------
