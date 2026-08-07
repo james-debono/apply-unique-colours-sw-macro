@@ -25,7 +25,7 @@
 '
 ' To use, open a part or assembly document and run the macro.
 '
-'   Version   0.9.0
+'   Version   0.10.0
 '   Date      2026-08-07
 '   Author    James Debono
 '
@@ -105,13 +105,25 @@ Const SHAPE_FALLBACK As Boolean = True
 ' below any feature displacement worth colouring differently.
 Const SHAPE_TOLERANCE As Double = 0.000001
 
-' Reuse one appearance object for every body in a group instead of reading a
-' fresh one back for each. Reading the appearance costs an API round trip per
-' body, and all bodies in a group receive the same colour, so the object obtained
-' for the first can serve the rest. Turn off if any body comes out uncoloured.
-Const FAST_APPLY As Boolean = True
+' How colours are written.
+'
+'   0  Through the active display state. Colours are scoped to that display
+'      state, so the macro can be run separately in each one.
+'   1  Straight onto the body or component, in one call. Faster if the cost is
+'      in the display state machinery rather than the document write itself,
+'      but the colour may land on the configuration rather than the active
+'      display state - which is why 0.4.5 moved to method 0 in the first place.
+'
+' Whichever is chosen, the other is used as a fallback if it fails.
+'
+' Measured on a 56 body weldment: naming the entity and reading its appearance
+' back are both effectively free - 56 of each completed inside the resolution of
+' the VBA timer. The display state write is therefore the entire cost of
+' applying colour, at about 117 ms per body. Method 1 exists to find out whether
+' a direct write avoids that.
+Const WRITE_METHOD As Long = 1
 
-Const MACRO_VERSION As String = "0.9.0"
+Const MACRO_VERSION As String = "0.10.0"
 
 ' Perceived brightness of each colour layer, darkest usable to lightest.
 ' Values are relative luminance, 0 = black, 1 = white.
@@ -495,23 +507,25 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
         rgbArr = ColourAtLuminance(groupHues(j), LayerLuminance(groupLayer(j)))
         groupColour(j) = RGB(ToByte(rgbArr(0)), ToByte(rgbArr(1)), ToByte(rgbArr(2)))
 
-        ' Cleared per group: each group reads one appearance object and reuses it.
-        Dim sharedAppearance As SldWorks.AppearanceSetting
-        Set sharedAppearance = Nothing
-
         For k = 1 To groupMembers(j).Count
             Set swBody = groupMembers(j)(k)
-            If ApplyColourToEntity(swModel, swDispStateSetts, swBody, _
-                                   groupColour(j), sharedAppearance) Then
-                colouredBodies = colouredBodies + 1
+
+            Dim applied As Boolean
+            If WRITE_METHOD = 1 Then
+                applied = WriteBodyColourDirect(swBody, rgbArr)
+                If Not applied Then
+                    applied = ApplyColourToEntity(swModel, swDispStateSetts, _
+                                                  swBody, groupColour(j))
+                End If
             Else
-                ' Display states unavailable: set the body's properties directly
-                On Error Resume Next
-                swBody.MaterialPropertyValues2 = BuildMaterialArray(rgbArr)
-                If Err.Number = 0 Then colouredBodies = colouredBodies + 1
-                Err.Clear
-                On Error GoTo ErrorHandler
+                applied = ApplyColourToEntity(swModel, swDispStateSetts, _
+                                              swBody, groupColour(j))
+                If Not applied Then
+                    applied = WriteBodyColourDirect(swBody, rgbArr)
+                End If
             End If
+
+            If applied Then colouredBodies = colouredBodies + 1
         Next k
 
         If SHOW_DIAGNOSTICS Then
@@ -566,7 +580,7 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
               "Skipped by size gate: " & gateRejects & vbCrLf & _
               "Coloured: " & colouredBodies & " of " & totalBodies & vbCrLf & _
               "Verified: " & verified & " of " & totalBodies & _
-              IIf(FAST_APPLY, "  (fast apply on)", "  (fast apply off)") & vbCrLf & _
+              IIf(WRITE_METHOD = 1, "  (direct write)", "  (display state write)") & vbCrLf & _
               "Measure: " & Format(tMeasured - tStart, "0.00") & " s" & vbCrLf & _
               "Group:   " & Format(tGrouped - tMeasured, "0.00") & " s" & vbCrLf & _
               "Apply:   " & Format(tDone - tGrouped, "0.00") & " s" & vbCrLf & _
@@ -707,21 +721,25 @@ Sub ProcessAssembly(swModel As SldWorks.ModelDoc2)
         Dim colourValue As Long
         colourValue = RGB(ToByte(rgbArr(0)), ToByte(rgbArr(1)), ToByte(rgbArr(2)))
 
-        Dim sharedAppearance As SldWorks.AppearanceSetting
-        Set sharedAppearance = Nothing
-
         For k = 1 To groupMembers(j).Count
             Set swComp = groupMembers(j)(k)
-            If ApplyColourToEntity(swModel, swDispStateSetts, swComp, _
-                                   colourValue, sharedAppearance) Then
-                colouredNow = colouredNow + 1
+
+            Dim applied As Boolean
+            If WRITE_METHOD = 1 Then
+                applied = WriteComponentColourDirect(swComp, rgbArr)
+                If Not applied Then
+                    applied = ApplyColourToEntity(swModel, swDispStateSetts, _
+                                                  swComp, colourValue)
+                End If
             Else
-                On Error Resume Next
-                swComp.SetMaterialPropertyValues2 BuildMaterialArray(rgbArr), 1, Empty
-                If Err.Number = 0 Then colouredNow = colouredNow + 1
-                Err.Clear
-                On Error GoTo ErrorHandler
+                applied = ApplyColourToEntity(swModel, swDispStateSetts, _
+                                              swComp, colourValue)
+                If Not applied Then
+                    applied = WriteComponentColourDirect(swComp, rgbArr)
+                End If
             End If
+
+            If applied Then colouredNow = colouredNow + 1
         Next k
     Next j
 
@@ -1194,41 +1212,32 @@ End Function
 ' Returns False if the display state route is unavailable, so the caller can
 ' fall back to setting the entity's material properties directly.
 '
-' reuseAppearance carries the appearance object between calls within one group.
-' Reading it back is a whole API round trip and every body in a group takes the
-' same colour, so the first body's object can serve the rest. The caller clears
-' it at the start of each group; passing Nothing forces a fresh read.
+' 0.9.0 reused one appearance object across a group to save reading it back per
+' body. Measured, that saved nothing - 119 ms per body before, 117 ms after -
+' because the read costs nothing to begin with. The complication was removed.
 Function ApplyColourToEntity(ByVal swModel As SldWorks.ModelDoc2, _
                              ByVal swDispStateSetts As SldWorks.DisplayStateSetting, _
-                             ByVal swEntity As Object, ByVal colourValue As Long, _
-                             ByRef reuseAppearance As SldWorks.AppearanceSetting) As Boolean
+                             ByVal swEntity As Object, ByVal colourValue As Long) As Boolean
     On Error GoTo Failed
 
     Dim ents(0) As Object
     Set ents(0) = swEntity
     swDispStateSetts.Entities = ents
 
-    Dim appearSet As SldWorks.AppearanceSetting
+    Dim vAppearances As Variant
+    vAppearances = swModel.Extension.DisplayStateSpecMaterialPropertyValues(swDispStateSetts)
 
-    If reuseAppearance Is Nothing Then
-        Dim vAppearances As Variant
-        vAppearances = swModel.Extension.DisplayStateSpecMaterialPropertyValues(swDispStateSetts)
-
-        If IsEmpty(vAppearances) Then
-            ApplyColourToEntity = False
-            Exit Function
-        End If
-
-        Set appearSet = vAppearances(0)
-        appearSet.Color = colourValue
-        appearSet.Diffuse = 1#
-        appearSet.Specular = 0.5
-        appearSet.Luminous = 0#
-
-        If FAST_APPLY Then Set reuseAppearance = appearSet
-    Else
-        Set appearSet = reuseAppearance
+    If IsEmpty(vAppearances) Then
+        ApplyColourToEntity = False
+        Exit Function
     End If
+
+    Dim appearSet As SldWorks.AppearanceSetting
+    Set appearSet = vAppearances(0)
+    appearSet.Color = colourValue
+    appearSet.Diffuse = 1#
+    appearSet.Specular = 0.5
+    appearSet.Luminous = 0#
 
     Dim newAppearances(0) As SldWorks.AppearanceSetting
     Set newAppearances(0) = appearSet
@@ -1239,6 +1248,29 @@ Function ApplyColourToEntity(ByVal swModel As SldWorks.ModelDoc2, _
 
 Failed:
     ApplyColourToEntity = False
+End Function
+
+' Writes the colour straight onto a body, bypassing the display state machinery.
+Function WriteBodyColourDirect(ByVal swBody As SldWorks.Body2, _
+                               ByVal rgbArr As Variant) As Boolean
+    On Error GoTo Failed
+    swBody.MaterialPropertyValues2 = BuildMaterialArray(rgbArr)
+    WriteBodyColourDirect = True
+    Exit Function
+Failed:
+    WriteBodyColourDirect = False
+End Function
+
+' The same for an assembly component, scoped to the active configuration.
+Function WriteComponentColourDirect(ByVal swComp As SldWorks.Component2, _
+                                    ByVal rgbArr As Variant) As Boolean
+    On Error GoTo Failed
+    swComp.SetMaterialPropertyValues2 BuildMaterialArray(rgbArr), _
+        swInConfigurationOpts_e.swThisConfiguration, Empty
+    WriteComponentColourDirect = True
+    Exit Function
+Failed:
+    WriteComponentColourDirect = False
 End Function
 
 ' Reads the colour back off an entity and reports whether it actually took.
