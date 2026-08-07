@@ -25,7 +25,7 @@
 '
 ' To use, open a part or assembly document and run the macro.
 '
-'   Version   0.8.0
+'   Version   0.8.1
 '   Date      2026-08-07
 '   Author    James Debono
 '
@@ -105,7 +105,7 @@ Const SHAPE_FALLBACK As Boolean = True
 ' below any feature displacement worth colouring differently.
 Const SHAPE_TOLERANCE As Double = 0.000001
 
-Const MACRO_VERSION As String = "0.8.0"
+Const MACRO_VERSION As String = "0.8.1"
 
 ' Perceived brightness of each colour layer, darkest usable to lightest.
 ' Values are relative luminance, 0 = black, 1 = white.
@@ -286,11 +286,13 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
     Dim notCoincident As Long
     Dim shapeMerges As Long
     Dim mirrorSplits As Long
+    Dim kernelMatched As Long
     comparisons = 0
     gateRejects = 0
     notCoincident = 0
     shapeMerges = 0
     mirrorSplits = 0
+    kernelMatched = 0
 
     ' Bucket groups by face count. Bodies with different face counts can never
     ' match, so this keeps the expensive comparison off almost every pair.
@@ -332,6 +334,7 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
                         verdict = CompareBodies(swBody, swRepBody)
                         If verdict = 1 Then
                             isSame = True
+                            kernelMatched = kernelMatched + 1
                         ElseIf verdict = -1 Then
                             ' Same shape, opposite hand.
                             isSame = MATCH_MIRRORED
@@ -522,9 +525,10 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
         msg = msg & vbCrLf & vbCrLf & _
               "Engine: " & IIf(useKernel, "geometry kernel", "shape invariants") & vbCrLf & _
               "Kernel comparisons: " & comparisons & vbCrLf & _
-              "  of which not coincident: " & notCoincident & vbCrLf & _
-              "  rescued by shape match: " & shapeMerges & vbCrLf & _
-              "Mirror images kept apart: " & mirrorSplits & vbCrLf & _
+              "  matched outright: " & kernelMatched & vbCrLf & _
+              "  matched as mirror: " & mirrorSplits & vbCrLf & _
+              "  no match: " & notCoincident & vbCrLf & _
+              "  of those, rescued by shape: " & shapeMerges & vbCrLf & _
               "Skipped by size gate: " & gateRejects & vbCrLf & _
               "Coloured: " & colouredBodies & " of " & totalBodies & vbCrLf & _
               "Measure: " & Format(tMeasured - tStart, "0.00") & " s" & vbCrLf & _
@@ -731,16 +735,24 @@ End Function
 Function CompareBodies(ByVal bodyA As SldWorks.Body2, ByVal bodyB As SldWorks.Body2) As Long
     On Error GoTo Failed
 
-    Dim swXform As SldWorks.MathTransform
-    If Not bodyA.GetCoincidenceTransform2(bodyB, swXform) Then
-        CompareBodies = 0
-        Exit Function
-    End If
+    CompareBodies = 0
 
-    If TransformIsReflection(swXform) Then
-        CompareBodies = -1
-    Else
-        CompareBodies = 1
+    Dim swXform As SldWorks.MathTransform
+    Dim found As Boolean
+
+    ' Take the result into a Boolean before testing it. Writing this as
+    ' "If Not bodyA.GetCoincidenceTransform2(...) Then" - as 0.8.0 did, to get an
+    ' early exit - made every comparison report no match and silently disabled
+    ' the whole kernel engine. Applying Not straight to the call does not invert
+    ' what comes back the way it appears to.
+    found = bodyA.GetCoincidenceTransform2(bodyB, swXform)
+
+    If found Then
+        If TransformIsReflection(swXform) Then
+            CompareBodies = -1
+        Else
+            CompareBodies = 1
+        End If
     End If
     Exit Function
 
