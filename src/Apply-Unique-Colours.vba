@@ -25,7 +25,7 @@
 '
 ' To use, open a part or assembly document and run the macro.
 '
-'   Version   0.8.1
+'   Version   0.9.0
 '   Date      2026-08-07
 '   Author    James Debono
 '
@@ -105,7 +105,13 @@ Const SHAPE_FALLBACK As Boolean = True
 ' below any feature displacement worth colouring differently.
 Const SHAPE_TOLERANCE As Double = 0.000001
 
-Const MACRO_VERSION As String = "0.8.1"
+' Reuse one appearance object for every body in a group instead of reading a
+' fresh one back for each. Reading the appearance costs an API round trip per
+' body, and all bodies in a group receive the same colour, so the object obtained
+' for the first can serve the rest. Turn off if any body comes out uncoloured.
+Const FAST_APPLY As Boolean = True
+
+Const MACRO_VERSION As String = "0.9.0"
 
 ' Perceived brightness of each colour layer, darkest usable to lightest.
 ' Values are relative luminance, 0 = black, 1 = white.
@@ -481,13 +487,22 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
     Dim colouredBodies As Long
     colouredBodies = 0
 
+    Dim groupColour() As Long
+    ReDim groupColour(numGroups - 1)
+
     For j = 0 To numGroups - 1
         Dim rgbArr As Variant
         rgbArr = ColourAtLuminance(groupHues(j), LayerLuminance(groupLayer(j)))
+        groupColour(j) = RGB(ToByte(rgbArr(0)), ToByte(rgbArr(1)), ToByte(rgbArr(2)))
+
+        ' Cleared per group: each group reads one appearance object and reuses it.
+        Dim sharedAppearance As SldWorks.AppearanceSetting
+        Set sharedAppearance = Nothing
 
         For k = 1 To groupMembers(j).Count
             Set swBody = groupMembers(j)(k)
-            If ApplyColourToEntity(swModel, swDispStateSetts, swBody, rgbArr) Then
+            If ApplyColourToEntity(swModel, swDispStateSetts, swBody, _
+                                   groupColour(j), sharedAppearance) Then
                 colouredBodies = colouredBodies + 1
             Else
                 ' Display states unavailable: set the body's properties directly
@@ -509,11 +524,30 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
         End If
     Next j
 
+    tDone = Timer
+
+    ' Check the colours actually landed rather than trusting the apply calls.
+    ' Timed separately so it does not distort the apply figure.
+    Dim verified As Long
+    Dim tVerified As Single
+    verified = -1
+    If SHOW_DIAGNOSTICS Then
+        currentStep = "Verifying colours"
+        verified = 0
+        For i = 0 To totalBodies - 1
+            Set swBody = vBodies(i)
+            If ColourTookEffect(swModel, swDispStateSetts, swBody, _
+                                groupColour(bodyGroup(i))) Then
+                verified = verified + 1
+            End If
+        Next i
+    End If
+    tVerified = Timer
+
     ' Redraw before the dialog, otherwise the colours only appear once it is
     ' dismissed and the run looks like it did nothing.
     If Not swView Is Nothing Then swView.EnableGraphicsUpdate = True
     swModel.GraphicsRedraw2
-    tDone = Timer
 
     Dim msg As String
     msg = "Applied unique colours to bodies in active display state" & vbCrLf & _
@@ -531,10 +565,13 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
               "  of those, rescued by shape: " & shapeMerges & vbCrLf & _
               "Skipped by size gate: " & gateRejects & vbCrLf & _
               "Coloured: " & colouredBodies & " of " & totalBodies & vbCrLf & _
+              "Verified: " & verified & " of " & totalBodies & _
+              IIf(FAST_APPLY, "  (fast apply on)", "  (fast apply off)") & vbCrLf & _
               "Measure: " & Format(tMeasured - tStart, "0.00") & " s" & vbCrLf & _
               "Group:   " & Format(tGrouped - tMeasured, "0.00") & " s" & vbCrLf & _
               "Apply:   " & Format(tDone - tGrouped, "0.00") & " s" & vbCrLf & _
-              "Total:   " & Format(tDone - tStart, "0.00") & " s"
+              "Verify:  " & Format(tVerified - tDone, "0.00") & " s" & vbCrLf & _
+              "Total:   " & Format(tDone - tStart, "0.00") & " s (excluding verify)"
     End If
 
     MsgBox msg, vbInformation
@@ -667,9 +704,16 @@ Sub ProcessAssembly(swModel As SldWorks.ModelDoc2)
         Dim rgbArr As Variant
         rgbArr = ColourAtLuminance(groupHues(j), LayerLuminance(groupLayer(j)))
 
+        Dim colourValue As Long
+        colourValue = RGB(ToByte(rgbArr(0)), ToByte(rgbArr(1)), ToByte(rgbArr(2)))
+
+        Dim sharedAppearance As SldWorks.AppearanceSetting
+        Set sharedAppearance = Nothing
+
         For k = 1 To groupMembers(j).Count
             Set swComp = groupMembers(j)(k)
-            If ApplyColourToEntity(swModel, swDispStateSetts, swComp, rgbArr) Then
+            If ApplyColourToEntity(swModel, swDispStateSetts, swComp, _
+                                   colourValue, sharedAppearance) Then
                 colouredNow = colouredNow + 1
             Else
                 On Error Resume Next
@@ -1149,29 +1193,42 @@ End Function
 ' 0.6.0 left every multi-body group - all the repeated hardware - uncoloured.
 ' Returns False if the display state route is unavailable, so the caller can
 ' fall back to setting the entity's material properties directly.
+'
+' reuseAppearance carries the appearance object between calls within one group.
+' Reading it back is a whole API round trip and every body in a group takes the
+' same colour, so the first body's object can serve the rest. The caller clears
+' it at the start of each group; passing Nothing forces a fresh read.
 Function ApplyColourToEntity(ByVal swModel As SldWorks.ModelDoc2, _
                              ByVal swDispStateSetts As SldWorks.DisplayStateSetting, _
-                             ByVal swEntity As Object, ByVal rgbArr As Variant) As Boolean
+                             ByVal swEntity As Object, ByVal colourValue As Long, _
+                             ByRef reuseAppearance As SldWorks.AppearanceSetting) As Boolean
     On Error GoTo Failed
 
     Dim ents(0) As Object
     Set ents(0) = swEntity
     swDispStateSetts.Entities = ents
 
-    Dim vAppearances As Variant
-    vAppearances = swModel.Extension.DisplayStateSpecMaterialPropertyValues(swDispStateSetts)
-
-    If IsEmpty(vAppearances) Then
-        ApplyColourToEntity = False
-        Exit Function
-    End If
-
     Dim appearSet As SldWorks.AppearanceSetting
-    Set appearSet = vAppearances(0)
-    appearSet.Color = RGB(ToByte(rgbArr(0)), ToByte(rgbArr(1)), ToByte(rgbArr(2)))
-    appearSet.Diffuse = 1#
-    appearSet.Specular = 0.5
-    appearSet.Luminous = 0#
+
+    If reuseAppearance Is Nothing Then
+        Dim vAppearances As Variant
+        vAppearances = swModel.Extension.DisplayStateSpecMaterialPropertyValues(swDispStateSetts)
+
+        If IsEmpty(vAppearances) Then
+            ApplyColourToEntity = False
+            Exit Function
+        End If
+
+        Set appearSet = vAppearances(0)
+        appearSet.Color = colourValue
+        appearSet.Diffuse = 1#
+        appearSet.Specular = 0.5
+        appearSet.Luminous = 0#
+
+        If FAST_APPLY Then Set reuseAppearance = appearSet
+    Else
+        Set appearSet = reuseAppearance
+    End If
 
     Dim newAppearances(0) As SldWorks.AppearanceSetting
     Set newAppearances(0) = appearSet
@@ -1182,6 +1239,36 @@ Function ApplyColourToEntity(ByVal swModel As SldWorks.ModelDoc2, _
 
 Failed:
     ApplyColourToEntity = False
+End Function
+
+' Reads the colour back off an entity and reports whether it actually took.
+'
+' The apply call can report success without having changed anything - that is
+' exactly how the 0.6.0 batching fault went unnoticed - so diagnostic runs check
+' the result rather than trusting it. This is what makes it safe to experiment
+' with faster ways of applying colour.
+Function ColourTookEffect(ByVal swModel As SldWorks.ModelDoc2, _
+                          ByVal swDispStateSetts As SldWorks.DisplayStateSetting, _
+                          ByVal swEntity As Object, ByVal colourValue As Long) As Boolean
+    On Error GoTo Failed
+
+    ColourTookEffect = False
+
+    Dim ents(0) As Object
+    Set ents(0) = swEntity
+    swDispStateSetts.Entities = ents
+
+    Dim vAppearances As Variant
+    vAppearances = swModel.Extension.DisplayStateSpecMaterialPropertyValues(swDispStateSetts)
+    If IsEmpty(vAppearances) Then Exit Function
+
+    Dim appearSet As SldWorks.AppearanceSetting
+    Set appearSet = vAppearances(0)
+    ColourTookEffect = (appearSet.Color = colourValue)
+    Exit Function
+
+Failed:
+    ColourTookEffect = False
 End Function
 
 Function BuildMaterialArray(ByVal rgbArr As Variant) As Variant
