@@ -10,7 +10,9 @@
 ' can move one onto the other, or failing that if every vertex sits the same
 ' distance from the body's centre of mass to within a micron. Position and
 ' orientation are therefore irrelevant, while a genuine difference - a hole moved
-' a fraction of a millimetre - separates them.
+' a fraction of a millimetre - separates them. A mirror image counts as a
+' different part, since an opposite hand is not interchangeable with its
+' original on the shop floor.
 '
 ' In an assembly, components are grouped by file path and referenced
 ' configuration. Subassemblies are skipped; only bottom-level parts are
@@ -25,13 +27,20 @@
 '
 ' To use, open a part or assembly document and run the macro.
 '
-'   Version   0.10.1
+'   Version   0.10.2
 '   Date      2026-08-07
 '   Author    James Debono
 '
 '------------------------------------------------------------------------------
 ' CHANGELOG (summary - see CHANGELOG.md for the full history)
 '
+'   0.10.x  Direct colour writing measured and rejected: sixty times faster,
+'           but not scoped to a display state.
+'   0.9.x   Applied colours verified by reading them back.
+'   0.8.x   Mirrored bodies kept apart, identified from the sign of the
+'           transform the kernel returns.
+'   0.7.x   Vertex distance comparison, for imported parts that the kernel's
+'           own tolerance separates.
 '   0.6.x   Body matching performed by the geometry kernel rather than by
 '           numeric shape invariants. Luminance-corrected palette.
 '   0.5.x   Body grouping driven by the mass-normalised principal moments of
@@ -46,30 +55,32 @@
 
 Option Explicit
 
-'--- Settings -----------------------------------------------------------------
-
-' Compare bodies with the geometry kernel (IBody2::GetCoincidenceTransform2).
-' This is an exact test: two bodies match only if one can be moved onto the
-' other. Set to False to force the numeric invariant method used up to 0.5.18.
-Const USE_KERNEL_COMPARISON As Boolean = True
-
-' Give mirrored copies of a body the same colour as the original.
+'--- Notes for maintenance ----------------------------------------------------
 '
-' The geometry kernel treats a mirror image as coincident, so this is on by
-' default in SOLIDWORKS itself. Left off here, because a mirrored part is
-' usually a genuinely different part: a bracket and its opposite hand are not
-' interchangeable on the shop floor even though their geometry matches. Turn it
-' on if mirrored instances of the same hardware should read as one part.
-Const MATCH_MIRRORED As Boolean = False
-
-' Shift generated colours away from colours already applied to individual faces.
-' Costs one API call per face in the model, so turning it off is the single
-' biggest speed-up available on models with no manual face colours.
-Const AVOID_EXISTING_FACE_COLOURS As Boolean = True
-
-' Report timings and per-group detail when the macro finishes. Group detail is
-' written to the VBA Immediate window (Ctrl+G in the editor).
-Const SHOW_DIAGNOSTICS As Boolean = True
+' There are no user settings. Behaviour is fixed, and the constants below only
+' name values that would otherwise sit unexplained in the code.
+'
+' Two behaviours are deliberate and settled, recorded here because both look
+' like arbitrary choices when read in isolation:
+'
+'   Mirrored bodies get their own colour. The geometry kernel counts a mirror
+'   image as coincident, so this takes explicit work to undo - see
+'   CompareBodies. A bracket and its opposite hand are not interchangeable on
+'   the shop floor, whatever their geometry says.
+'
+'   Colours already applied to individual faces are read and avoided, so that
+'   generated colours do not collide with them. This costs one API call per face
+'   in the model and is the largest remaining cost after body matching, but the
+'   behaviour was asked for and is kept.
+'
+' Diagnostics are the one switch worth knowing about. Turning SHOW_DIAGNOSTICS
+' on reports how every body was matched, writes a per-body breakdown to the VBA
+' Immediate window (Ctrl+G in the editor), and reads every colour back to confirm
+' it was applied. Every fault found during development - 0.6.0 leaving repeated
+' hardware uncoloured, 0.6.2 rejecting matches before the kernel saw them, 0.8.0
+' disabling the kernel engine outright - was diagnosed from that output. Turn it
+' on before investigating anything.
+Const SHOW_DIAGNOSTICS As Boolean = False
 
 ' How far apart two bodies' volume and surface area may be and still be handed to
 ' the kernel for a proper comparison. Its only job is to skip pairs that obviously
@@ -84,28 +95,30 @@ Const SHOW_DIAGNOSTICS As Boolean = True
 ' while leaving the match decision where it belongs - with the kernel.
 Const SIZE_GATE_TOLERANCE As Double = 0.001
 
-' When the kernel reports two bodies are not coincident, compare their shape
-' directly as a second opinion: the sorted distances of every vertex from the
-' body's centre of mass, matched term by term.
+' How far two corresponding vertices may sit apart before the shape comparison
+' calls two bodies different, in metres.
 '
-' This exists because the kernel's comparison carries a tolerance of its own, and
-' hardware imported through several separate insert-part features falls just
-' outside it. The same rivet nut derived twice was measured nine parts per
-' million apart in volume - a few tens of nanometres of geometry.
+' That comparison is a second opinion, used where the kernel reports two bodies
+' are not coincident: the sorted distances of every vertex from the body's centre
+' of mass, matched term by term. It exists because the kernel's own comparison
+' carries a tolerance, and hardware imported through several separate insert-part
+' features falls just outside it - the same rivet nut derived twice measured nine
+' parts per million apart in volume, a few tens of nanometres of geometry.
 '
 ' Aggregate measurements cannot tell that apart from a real difference, and in
 ' fact get it backwards: two tubes with a hole in different places have volumes
 ' agreeing to fifteen decimal places, because moving a hole removes exactly as
-' much material as before. Vertex positions do not have that blind spot - a hole
-' that moves takes its vertices with it.
-Const SHAPE_FALLBACK As Boolean = True
-
-' How far two corresponding vertices may sit apart, in metres. One micron is far
-' above the tens of nanometres separating re-derived copies of one part, and far
-' below any feature displacement worth colouring differently.
+' much material as before. Vertex positions have no such blind spot - a hole that
+' moves takes its vertices with it.
+'
+' One micron sits far above the tens of nanometres separating re-derived copies
+' of one part, and far below any feature displacement worth colouring
+' differently. Measured on representative geometry, a hole moved 5 mm shifts the
+' signature by 2.5 mm and re-derivation noise shifts it by 30 nm - either side of
+' this value by a factor of about 2500.
 Const SHAPE_TOLERANCE As Double = 0.000001
 
-Const MACRO_VERSION As String = "0.10.1"
+Const MACRO_VERSION As String = "0.10.2"
 
 ' Perceived brightness of each colour layer, darkest usable to lightest.
 ' Values are relative luminance, 0 = black, 1 = white.
@@ -187,32 +200,33 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
     ReDim excludedHues(1000)
     numExcludedHues = 0
 
-    If AVOID_EXISTING_FACE_COLOURS Then
-        Dim swBody As SldWorks.Body2
-        For i = 0 To totalBodies - 1
-            Set swBody = vBodies(i)
-            Dim vFaces As Variant
-            vFaces = swBody.GetFaces()
-            If Not IsEmpty(vFaces) Then
-                Dim swFace As SldWorks.Face2
-                For j = 0 To UBound(vFaces)
-                    Set swFace = vFaces(j)
-                    Dim vMat As Variant
-                    vMat = swFace.MaterialPropertyValues
-                    If IsArray(vMat) Then
-                        If UBound(vMat) >= 2 Then
-                            If numExcludedHues >= UBound(excludedHues) Then
-                                ReDim Preserve excludedHues(UBound(excludedHues) + 1000)
-                            End If
-                            excludedHues(numExcludedHues) = GetHSVHueFromRGB( _
-                                CDbl(vMat(0)), CDbl(vMat(1)), CDbl(vMat(2)))
-                            numExcludedHues = numExcludedHues + 1
+    ' One API call per face in the model, and the largest remaining cost after
+    ' body matching. Kept because generated colours colliding with a colour the
+    ' user put on a face by hand defeats the point of the macro.
+    Dim swBody As SldWorks.Body2
+    For i = 0 To totalBodies - 1
+        Set swBody = vBodies(i)
+        Dim vFaces As Variant
+        vFaces = swBody.GetFaces()
+        If Not IsEmpty(vFaces) Then
+            Dim swFace As SldWorks.Face2
+            For j = 0 To UBound(vFaces)
+                Set swFace = vFaces(j)
+                Dim vMat As Variant
+                vMat = swFace.MaterialPropertyValues
+                If IsArray(vMat) Then
+                    If UBound(vMat) >= 2 Then
+                        If numExcludedHues >= UBound(excludedHues) Then
+                            ReDim Preserve excludedHues(UBound(excludedHues) + 1000)
                         End If
+                        excludedHues(numExcludedHues) = GetHSVHueFromRGB( _
+                            CDbl(vMat(0)), CDbl(vMat(1)), CDbl(vMat(2)))
+                        numExcludedHues = numExcludedHues + 1
                     End If
-                Next j
-            End If
-        Next i
-    End If
+                End If
+            Next j
+        End If
+    Next i
 
     ' --- Measure every body once ----------------------------------------------
     currentStep = "Measuring bodies"
@@ -249,9 +263,10 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
     ' Decide which comparison engine to use. The kernel test is exact; the
     ' invariant test is the 0.5.18 fallback for builds that do not expose it.
     currentStep = "Selecting comparison engine"
+    ' Falls back to the 0.5.18 invariant comparison only where the build does not
+    ' expose IBody2::GetCoincidenceTransform2.
     Dim useKernel As Boolean
-    useKernel = False
-    If USE_KERNEL_COMPARISON Then useKernel = KernelComparisonWorks(vBodies(0))
+    useKernel = KernelComparisonWorks(vBodies(0))
 
     Dim bodyJ1() As Double, bodyJ2() As Double, bodyJ3() As Double
     ReDim bodyJ1(totalBodies - 1)
@@ -336,14 +351,14 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
                             isSame = True
                             kernelMatched = kernelMatched + 1
                         ElseIf verdict = -1 Then
-                            ' Same shape, opposite hand.
-                            isSame = MATCH_MIRRORED
-                            If Not isSame Then
-                                mirrorSplits = mirrorSplits + 1
-                                If SHOW_DIAGNOSTICS Then
-                                    Debug.Print "mirror image, kept apart: " & swBody.Name & _
-                                                "  vs  " & swRepBody.Name
-                                End If
+                            ' Same shape, opposite hand. Deliberately a different
+                            ' part: the kernel counts a mirror image as
+                            ' coincident, and we do not.
+                            isSame = False
+                            mirrorSplits = mirrorSplits + 1
+                            If SHOW_DIAGNOSTICS Then
+                                Debug.Print "mirror image, kept apart: " & swBody.Name & _
+                                            "  vs  " & swRepBody.Name
                             End If
                         Else
                             isSame = False
@@ -377,25 +392,23 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
                                         Format(RelDiff(bodyArea(i), bodyArea(rep)), "0.00E+00")
                         End If
 
-                        If SHAPE_FALLBACK Then
-                            If Not sigBuilt(i) Then
-                                sigCache(i) = VertexSignature(swBody, _
-                                    bodyCX(i), bodyCY(i), bodyCZ(i))
-                                sigBuilt(i) = True
-                            End If
-                            If Not sigBuilt(rep) Then
-                                sigCache(rep) = VertexSignature(swRepBody, _
-                                    bodyCX(rep), bodyCY(rep), bodyCZ(rep))
-                                sigBuilt(rep) = True
-                            End If
+                        If Not sigBuilt(i) Then
+                            sigCache(i) = VertexSignature(swBody, _
+                                bodyCX(i), bodyCY(i), bodyCZ(i))
+                            sigBuilt(i) = True
+                        End If
+                        If Not sigBuilt(rep) Then
+                            sigCache(rep) = VertexSignature(swRepBody, _
+                                bodyCX(rep), bodyCY(rep), bodyCZ(rep))
+                            sigBuilt(rep) = True
+                        End If
 
-                            If SignaturesMatch(sigCache(i), sigCache(rep), SHAPE_TOLERANCE) Then
-                                isSame = True
-                                shapeMerges = shapeMerges + 1
-                                If SHOW_DIAGNOSTICS Then
-                                    Debug.Print "   -> merged by shape: every vertex within " & _
-                                                Format(SHAPE_TOLERANCE * 1000000#, "0.0") & " micron"
-                                End If
+                        If SignaturesMatch(sigCache(i), sigCache(rep), SHAPE_TOLERANCE) Then
+                            isSame = True
+                            shapeMerges = shapeMerges + 1
+                            If SHOW_DIAGNOSTICS Then
+                                Debug.Print "   -> merged by shape: every vertex within " & _
+                                            Format(SHAPE_TOLERANCE * 1000000#, "0.0") & " micron"
                             End If
                         End If
                     End If
