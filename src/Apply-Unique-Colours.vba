@@ -24,7 +24,7 @@
 '
 ' To use, open a part or assembly document and run the macro.
 '
-'   Version   0.6.1
+'   Version   0.6.2
 '   Date      2026-08-07
 '   Author    James Debono
 '
@@ -67,7 +67,7 @@ Const AVOID_EXISTING_FACE_COLOURS As Boolean = True
 ' written to the VBA Immediate window (Ctrl+G in the editor).
 Const SHOW_DIAGNOSTICS As Boolean = True
 
-Const MACRO_VERSION As String = "0.6.1"
+Const MACRO_VERSION As String = "0.6.2"
 
 ' Perceived brightness of each colour layer, darkest usable to lightest.
 ' Values are relative luminance, 0 = black, 1 = white.
@@ -296,6 +296,25 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
     Next i
 
     tGrouped = Timer
+
+    ' --- Per-body detail, for working out why two bodies did or did not match --
+    If SHOW_DIAGNOSTICS Then
+        Debug.Print "=== Apply Unique Colours " & MACRO_VERSION & " - body detail ==="
+        Debug.Print "engine: " & IIf(useKernel, "geometry kernel", "shape invariants") & _
+                    ", bodies: " & totalBodies & ", groups: " & numGroups
+        Debug.Print "group" & vbTab & "faces" & vbTab & "edges" & vbTab & _
+                    "volume_m3" & vbTab & vbTab & "area_m2" & vbTab & vbTab & "name"
+        For i = 0 To totalBodies - 1
+            Set swBody = vBodies(i)
+            Debug.Print bodyGroup(i) & vbTab & _
+                        bodyFaces(i) & vbTab & _
+                        swBody.GetEdgeCount() & vbTab & _
+                        Format(bodyVolume(i), "0.000000000000") & vbTab & _
+                        Format(bodyArea(i), "0.000000000000") & vbTab & _
+                        swBody.Name
+        Next i
+        Debug.Print "=== end body detail ==="
+    End If
 
     ' --- Build the palette ----------------------------------------------------
     currentStep = "Generating colours"
