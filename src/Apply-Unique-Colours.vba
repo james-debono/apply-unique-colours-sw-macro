@@ -24,7 +24,7 @@
 '
 ' To use, open a part or assembly document and run the macro.
 '
-'   Version   0.6.0
+'   Version   0.6.1
 '   Date      2026-08-07
 '   Author    James Debono
 '
@@ -67,7 +67,7 @@ Const AVOID_EXISTING_FACE_COLOURS As Boolean = True
 ' written to the VBA Immediate window (Ctrl+G in the editor).
 Const SHOW_DIAGNOSTICS As Boolean = True
 
-Const MACRO_VERSION As String = "0.6.0"
+Const MACRO_VERSION As String = "0.6.1"
 
 ' Perceived brightness of each colour layer, darkest usable to lightest.
 ' Values are relative luminance, 0 = black, 1 = white.
@@ -328,23 +328,26 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
         groupMembers(bodyGroup(i)).Add vBodies(i)
     Next i
 
+    Dim colouredBodies As Long
+    colouredBodies = 0
+
     For j = 0 To numGroups - 1
         Dim rgbArr As Variant
         rgbArr = ColourAtLuminance(groupHues(j), LayerLuminance(groupLayer(j)))
 
-        Dim ents() As Object
-        ReDim ents(groupMembers(j).Count - 1)
         For k = 1 To groupMembers(j).Count
-            Set ents(k - 1) = groupMembers(j)(k)
-        Next k
-
-        If Not ApplyColourToEntities(swModel, swDispStateSetts, ents, rgbArr) Then
-            ' Display states unavailable: fall back to direct body properties
-            For k = 1 To groupMembers(j).Count
-                Set swBody = groupMembers(j)(k)
+            Set swBody = groupMembers(j)(k)
+            If ApplyColourToEntity(swModel, swDispStateSetts, swBody, rgbArr) Then
+                colouredBodies = colouredBodies + 1
+            Else
+                ' Display states unavailable: set the body's properties directly
+                On Error Resume Next
                 swBody.MaterialPropertyValues2 = BuildMaterialArray(rgbArr)
-            Next k
-        End If
+                If Err.Number = 0 Then colouredBodies = colouredBodies + 1
+                Err.Clear
+                On Error GoTo ErrorHandler
+            End If
+        Next k
 
         If SHOW_DIAGNOSTICS Then
             Debug.Print "Group " & j & _
@@ -356,7 +359,10 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
         End If
     Next j
 
+    ' Redraw before the dialog, otherwise the colours only appear once it is
+    ' dismissed and the run looks like it did nothing.
     If Not swView Is Nothing Then swView.EnableGraphicsUpdate = True
+    swModel.GraphicsRedraw2
     tDone = Timer
 
     Dim msg As String
@@ -369,6 +375,7 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
         msg = msg & vbCrLf & vbCrLf & _
               "Engine: " & IIf(useKernel, "geometry kernel", "shape invariants") & vbCrLf & _
               "Body comparisons: " & comparisons & vbCrLf & _
+              "Coloured: " & colouredBodies & " of " & totalBodies & vbCrLf & _
               "Measure: " & Format(tMeasured - tStart, "0.00") & " s" & vbCrLf & _
               "Group:   " & Format(tGrouped - tMeasured, "0.00") & " s" & vbCrLf & _
               "Apply:   " & Format(tDone - tGrouped, "0.00") & " s" & vbCrLf & _
@@ -498,27 +505,31 @@ Sub ProcessAssembly(swModel As SldWorks.ModelDoc2)
         End If
     Next i
 
+    Dim colouredNow As Long
+    colouredNow = 0
+
     For j = 0 To numGroups - 1
-        If groupMembers(j).Count > 0 Then
-            Dim rgbArr As Variant
-            rgbArr = ColourAtLuminance(groupHues(j), LayerLuminance(groupLayer(j)))
+        Dim rgbArr As Variant
+        rgbArr = ColourAtLuminance(groupHues(j), LayerLuminance(groupLayer(j)))
 
-            Dim ents() As Object
-            ReDim ents(groupMembers(j).Count - 1)
-            For k = 1 To groupMembers(j).Count
-                Set ents(k - 1) = groupMembers(j)(k)
-            Next k
-
-            If Not ApplyColourToEntities(swModel, swDispStateSetts, ents, rgbArr) Then
-                For k = 1 To groupMembers(j).Count
-                    Set swComp = groupMembers(j)(k)
-                    swComp.SetMaterialPropertyValues2 BuildMaterialArray(rgbArr), 1, Empty
-                Next k
+        For k = 1 To groupMembers(j).Count
+            Set swComp = groupMembers(j)(k)
+            If ApplyColourToEntity(swModel, swDispStateSetts, swComp, rgbArr) Then
+                colouredNow = colouredNow + 1
+            Else
+                On Error Resume Next
+                swComp.SetMaterialPropertyValues2 BuildMaterialArray(rgbArr), 1, Empty
+                If Err.Number = 0 Then colouredNow = colouredNow + 1
+                Err.Clear
+                On Error GoTo ErrorHandler
             End If
-        End If
+        Next k
     Next j
 
+    ' Redraw before the dialog, otherwise the colours only appear once it is
+    ' dismissed and the run looks like it did nothing.
     If Not swView Is Nothing Then swView.EnableGraphicsUpdate = True
+    swModel.GraphicsRedraw2
     tDone = Timer
 
     Dim msg As String
@@ -529,7 +540,9 @@ Sub ProcessAssembly(swModel As SldWorks.ModelDoc2)
           "Macro Version: " & MACRO_VERSION
 
     If SHOW_DIAGNOSTICS Then
-        msg = msg & vbCrLf & vbCrLf & "Total: " & Format(tDone - tStart, "0.00") & " s"
+        msg = msg & vbCrLf & vbCrLf & _
+              "Coloured: " & colouredNow & " of " & coloredComps & vbCrLf & _
+              "Total: " & Format(tDone - tStart, "0.00") & " s"
     End If
 
     MsgBox msg, vbInformation
@@ -861,46 +874,46 @@ End Function
 
 '--- Colour application -------------------------------------------------------
 
-' Applies one colour to a whole group in a single pair of API calls, rather than
-' a pair per body. Returns False if the display state route is unavailable.
-Function ApplyColourToEntities(ByVal swModel As SldWorks.ModelDoc2, _
-                               ByVal swDispStateSetts As SldWorks.DisplayStateSetting, _
-                               ents() As Object, ByVal rgbArr As Variant) As Boolean
+' Applies one colour to a single body or component.
+'
+' This is deliberately one entity at a time. Passing several entities at once in
+' DisplayStateSetting::Entities reports success but silently applies nothing, so
+' 0.6.0 left every multi-body group - all the repeated hardware - uncoloured.
+' Returns False if the display state route is unavailable, so the caller can
+' fall back to setting the entity's material properties directly.
+Function ApplyColourToEntity(ByVal swModel As SldWorks.ModelDoc2, _
+                             ByVal swDispStateSetts As SldWorks.DisplayStateSetting, _
+                             ByVal swEntity As Object, ByVal rgbArr As Variant) As Boolean
     On Error GoTo Failed
 
+    Dim ents(0) As Object
+    Set ents(0) = swEntity
     swDispStateSetts.Entities = ents
 
     Dim vAppearances As Variant
     vAppearances = swModel.Extension.DisplayStateSpecMaterialPropertyValues(swDispStateSetts)
 
     If IsEmpty(vAppearances) Then
-        ApplyColourToEntities = False
+        ApplyColourToEntity = False
         Exit Function
     End If
 
-    Dim colourValue As Long
-    colourValue = RGB(ToByte(rgbArr(0)), ToByte(rgbArr(1)), ToByte(rgbArr(2)))
+    Dim appearSet As SldWorks.AppearanceSetting
+    Set appearSet = vAppearances(0)
+    appearSet.Color = RGB(ToByte(rgbArr(0)), ToByte(rgbArr(1)), ToByte(rgbArr(2)))
+    appearSet.Diffuse = 1#
+    appearSet.Specular = 0.5
+    appearSet.Luminous = 0#
 
-    Dim newAppearances() As SldWorks.AppearanceSetting
-    ReDim newAppearances(UBound(vAppearances))
-
-    Dim a As Long
-    For a = 0 To UBound(vAppearances)
-        Dim appearSet As SldWorks.AppearanceSetting
-        Set appearSet = vAppearances(a)
-        appearSet.Color = colourValue
-        appearSet.Diffuse = 1#
-        appearSet.Specular = 0.5
-        appearSet.Luminous = 0#
-        Set newAppearances(a) = appearSet
-    Next a
+    Dim newAppearances(0) As SldWorks.AppearanceSetting
+    Set newAppearances(0) = appearSet
 
     swModel.Extension.DisplayStateSpecMaterialPropertyValues(swDispStateSetts) = newAppearances
-    ApplyColourToEntities = True
+    ApplyColourToEntity = True
     Exit Function
 
 Failed:
-    ApplyColourToEntities = False
+    ApplyColourToEntity = False
 End Function
 
 Function BuildMaterialArray(ByVal rgbArr As Variant) As Variant
