@@ -24,7 +24,7 @@
 '
 ' To use, open a part or assembly document and run the macro.
 '
-'   Version   0.6.2
+'   Version   0.6.3
 '   Date      2026-08-07
 '   Author    James Debono
 '
@@ -67,7 +67,20 @@ Const AVOID_EXISTING_FACE_COLOURS As Boolean = True
 ' written to the VBA Immediate window (Ctrl+G in the editor).
 Const SHOW_DIAGNOSTICS As Boolean = True
 
-Const MACRO_VERSION As String = "0.6.2"
+' How far apart two bodies' volume and surface area may be and still be handed to
+' the kernel for a proper comparison. Its only job is to skip pairs that obviously
+' cannot match, so it is deliberately generous.
+'
+' Two instances of the same imported part can differ in computed volume by ten
+' parts per million or more, because each insert-part operation re-derives the
+' geometry rather than reusing one B-rep. 0.6.2 gated at one part per million on
+' the assumption that identical bodies agree to near machine precision; that was
+' wrong, and it rejected genuine matches before the kernel ever saw them. At one
+' part per thousand the gate still discards the overwhelming majority of pairs
+' while leaving the match decision where it belongs - with the kernel.
+Const SIZE_GATE_TOLERANCE As Double = 0.001
+
+Const MACRO_VERSION As String = "0.6.3"
 
 ' Perceived brightness of each colour layer, darkest usable to lightest.
 ' Values are relative luminance, 0 = black, 1 = white.
@@ -230,7 +243,11 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
     numGroups = 0
 
     Dim comparisons As Long
+    Dim gateRejects As Long
+    Dim notCoincident As Long
     comparisons = 0
+    gateRejects = 0
+    notCoincident = 0
 
     ' Bucket groups by face count. Bodies with different face counts can never
     ' match, so this keeps the expensive comparison off almost every pair.
@@ -275,7 +292,24 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
                         matched = True
                         groupIndex = g
                         Exit For
+                    Else
+                        ' Passed the size gate but the kernel still says these
+                        ' are different shapes. Worth seeing: it is the line
+                        ' between "same part" and "same size, different part".
+                        notCoincident = notCoincident + 1
+                        If SHOW_DIAGNOSTICS Then
+                            Dim swRepBody As SldWorks.Body2
+                            Set swRepBody = vBodies(rep)
+                            Debug.Print "not coincident: " & swBody.Name & _
+                                        "  vs  " & swRepBody.Name & _
+                                        "   dVolume=" & _
+                                        Format(RelDiff(bodyVolume(i), bodyVolume(rep)), "0.00E+00") & _
+                                        "   dArea=" & _
+                                        Format(RelDiff(bodyArea(i), bodyArea(rep)), "0.00E+00")
+                        End If
                     End If
+                Else
+                    gateRejects = gateRejects + 1
                 End If
             Next k
         End If
@@ -393,7 +427,9 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
     If SHOW_DIAGNOSTICS Then
         msg = msg & vbCrLf & vbCrLf & _
               "Engine: " & IIf(useKernel, "geometry kernel", "shape invariants") & vbCrLf & _
-              "Body comparisons: " & comparisons & vbCrLf & _
+              "Kernel comparisons: " & comparisons & vbCrLf & _
+              "  of which not coincident: " & notCoincident & vbCrLf & _
+              "Skipped by size gate: " & gateRejects & vbCrLf & _
               "Coloured: " & colouredBodies & " of " & totalBodies & vbCrLf & _
               "Measure: " & Format(tMeasured - tStart, "0.00") & " s" & vbCrLf & _
               "Group:   " & Format(tGrouped - tMeasured, "0.00") & " s" & vbCrLf & _
@@ -647,15 +683,24 @@ Failed:
     Set MirroredCopy = Nothing
 End Function
 
-' Cheap gate applied before the expensive comparison. Identical bodies agree on
-' volume and surface area to roughly machine precision, so this is deliberately
-' loose - its only job is to skip pairs that cannot possibly match.
+' Cheap gate applied before the expensive comparison. Its only job is to skip
+' pairs that obviously cannot match, so it is deliberately generous.
+' See SIZE_GATE_TOLERANCE in the settings block for why it is set where it is.
 Function SimilarSize(ByVal volA As Double, ByVal volB As Double, _
                      ByVal areaA As Double, ByVal areaB As Double) As Boolean
     Dim volTol As Double, areaTol As Double
-    volTol = Abs(volB) * 0.000001 + 0.000000000001
-    areaTol = Abs(areaB) * 0.000001 + 0.000000001
+    volTol = Abs(volB) * SIZE_GATE_TOLERANCE + 0.000000000001
+    areaTol = Abs(areaB) * SIZE_GATE_TOLERANCE + 0.000000001
     SimilarSize = (Abs(volA - volB) <= volTol) And (Abs(areaA - areaB) <= areaTol)
+End Function
+
+' Relative difference between two measurements, for diagnostics.
+Function RelDiff(ByVal a As Double, ByVal b As Double) As Double
+    If b = 0 Then
+        RelDiff = 0
+    Else
+        RelDiff = Abs(a - b) / Abs(b)
+    End If
 End Function
 
 '--- Fallback engine (0.5.18 shape invariants) --------------------------------
