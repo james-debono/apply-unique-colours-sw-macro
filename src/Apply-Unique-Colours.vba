@@ -25,7 +25,7 @@
 '
 ' To use, open a part or assembly document and run the macro.
 '
-'   Version   0.10.0
+'   Version   0.10.1
 '   Date      2026-08-07
 '   Author    James Debono
 '
@@ -105,25 +105,7 @@ Const SHAPE_FALLBACK As Boolean = True
 ' below any feature displacement worth colouring differently.
 Const SHAPE_TOLERANCE As Double = 0.000001
 
-' How colours are written.
-'
-'   0  Through the active display state. Colours are scoped to that display
-'      state, so the macro can be run separately in each one.
-'   1  Straight onto the body or component, in one call. Faster if the cost is
-'      in the display state machinery rather than the document write itself,
-'      but the colour may land on the configuration rather than the active
-'      display state - which is why 0.4.5 moved to method 0 in the first place.
-'
-' Whichever is chosen, the other is used as a fallback if it fails.
-'
-' Measured on a 56 body weldment: naming the entity and reading its appearance
-' back are both effectively free - 56 of each completed inside the resolution of
-' the VBA timer. The display state write is therefore the entire cost of
-' applying colour, at about 117 ms per body. Method 1 exists to find out whether
-' a direct write avoids that.
-Const WRITE_METHOD As Long = 1
-
-Const MACRO_VERSION As String = "0.10.0"
+Const MACRO_VERSION As String = "0.10.1"
 
 ' Perceived brightness of each colour layer, darkest usable to lightest.
 ' Values are relative luminance, 0 = black, 1 = white.
@@ -511,18 +493,13 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
             Set swBody = groupMembers(j)(k)
 
             Dim applied As Boolean
-            If WRITE_METHOD = 1 Then
+            applied = ApplyColourToEntity(swModel, swDispStateSetts, _
+                                          swBody, groupColour(j))
+            If Not applied Then
+                ' Display states unavailable on this build: write the colour
+                ' straight onto the body instead. It will not be scoped to a
+                ' display state, but a colour in every display state beats none.
                 applied = WriteBodyColourDirect(swBody, rgbArr)
-                If Not applied Then
-                    applied = ApplyColourToEntity(swModel, swDispStateSetts, _
-                                                  swBody, groupColour(j))
-                End If
-            Else
-                applied = ApplyColourToEntity(swModel, swDispStateSetts, _
-                                              swBody, groupColour(j))
-                If Not applied Then
-                    applied = WriteBodyColourDirect(swBody, rgbArr)
-                End If
             End If
 
             If applied Then colouredBodies = colouredBodies + 1
@@ -579,8 +556,7 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
               "  of those, rescued by shape: " & shapeMerges & vbCrLf & _
               "Skipped by size gate: " & gateRejects & vbCrLf & _
               "Coloured: " & colouredBodies & " of " & totalBodies & vbCrLf & _
-              "Verified: " & verified & " of " & totalBodies & _
-              IIf(WRITE_METHOD = 1, "  (direct write)", "  (display state write)") & vbCrLf & _
+              "Verified: " & verified & " of " & totalBodies & vbCrLf & _
               "Measure: " & Format(tMeasured - tStart, "0.00") & " s" & vbCrLf & _
               "Group:   " & Format(tGrouped - tMeasured, "0.00") & " s" & vbCrLf & _
               "Apply:   " & Format(tDone - tGrouped, "0.00") & " s" & vbCrLf & _
@@ -725,18 +701,10 @@ Sub ProcessAssembly(swModel As SldWorks.ModelDoc2)
             Set swComp = groupMembers(j)(k)
 
             Dim applied As Boolean
-            If WRITE_METHOD = 1 Then
+            applied = ApplyColourToEntity(swModel, swDispStateSetts, _
+                                          swComp, colourValue)
+            If Not applied Then
                 applied = WriteComponentColourDirect(swComp, rgbArr)
-                If Not applied Then
-                    applied = ApplyColourToEntity(swModel, swDispStateSetts, _
-                                                  swComp, colourValue)
-                End If
-            Else
-                applied = ApplyColourToEntity(swModel, swDispStateSetts, _
-                                              swComp, colourValue)
-                If Not applied Then
-                    applied = WriteComponentColourDirect(swComp, rgbArr)
-                End If
             End If
 
             If applied Then colouredNow = colouredNow + 1
