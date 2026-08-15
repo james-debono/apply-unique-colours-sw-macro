@@ -25,15 +25,25 @@
 ' Colours are written to the active display state only, so other display states
 ' and configurations are left untouched.
 '
+' Pattern and mirror features with "Propagate visual properties" switched on copy
+' their seed body's colour onto the bodies they create, every time the model
+' rebuilds. The macro cannot prevent that, but it counts those features and says
+' so when it finishes. That option is redundant here in any case: identical
+' bodies are grouped and coloured alike regardless of how they were created.
+'
 ' To use, open a part or assembly document and run the macro.
 '
-'   Version   0.10.2
-'   Date      2026-08-07
+'   Version   0.11.2
+'   Date      2026-08-13
 '   Author    James Debono
+'   Licence   MIT - full text below
+'   Source    https://github.com/james-debono/solidworks-apply-colours
 '
 '------------------------------------------------------------------------------
 ' CHANGELOG (summary - see CHANGELOG.md for the full history)
 '
+'   0.11.2  Version reported on completion corrected.
+'   0.11.1  Licence and header.
 '   0.10.x  Direct colour writing measured and rejected: sixty times faster,
 '           but not scoped to a display state.
 '   0.9.x   Applied colours verified by reading them back.
@@ -51,6 +61,30 @@
 '           colours avoided.
 '   0.2.x   Identical bodies grouped by volume, surface area and face count.
 '   0.1.x   Initial release. Sequential HSV colour per body.
+'
+'------------------------------------------------------------------------------
+' MIT Licence
+' SPDX-License-Identifier: MIT
+'
+' Copyright (c) 2026 James Debono
+'
+' Permission is hereby granted, free of charge, to any person obtaining a copy
+' of this software and associated documentation files (the "Software"), to deal
+' in the Software without restriction, including without limitation the rights
+' to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+' copies of the Software, and to permit persons to whom the Software is
+' furnished to do so, subject to the following conditions:
+'
+' The above copyright notice and this permission notice shall be included in all
+' copies or substantial portions of the Software.
+'
+' THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+' IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+' FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+' AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+' LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+' OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+' SOFTWARE.
 '==============================================================================
 
 Option Explicit
@@ -118,7 +152,9 @@ Const SIZE_GATE_TOLERANCE As Double = 0.001
 ' this value by a factor of about 2500.
 Const SHAPE_TOLERANCE As Double = 0.000001
 
-Const MACRO_VERSION As String = "0.10.2"
+' Must match the Version line in the header block above. build-library.ps1 checks
+' that they agree and fails the build if they drift.
+Const MACRO_VERSION As String = "0.11.2"
 
 ' Perceived brightness of each colour layer, darkest usable to lightest.
 ' Values are relative luminance, 0 = black, 1 = white.
@@ -328,11 +364,11 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
         If buckets.Exists(bucketKey) Then
             Dim bucket As Collection
             Set bucket = buckets(bucketKey)
-            For k = 1 To bucket.Count
-                Dim g As Long
+            For k = 1 To bucket.count
+                Dim G As Long
                 Dim rep As Long
-                g = bucket(k)
-                rep = groupRep(g)
+                G = bucket(k)
+                rep = groupRep(G)
 
                 ' Cheap size gate first. Identical bodies agree on volume and
                 ' area to far better than this, so it never rejects a true match.
@@ -415,7 +451,7 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
 
                     If isSame Then
                         matched = True
-                        groupIndex = g
+                        groupIndex = G
                         Exit For
                     End If
                 Else
@@ -502,7 +538,7 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
         rgbArr = ColourAtLuminance(groupHues(j), LayerLuminance(groupLayer(j)))
         groupColour(j) = RGB(ToByte(rgbArr(0)), ToByte(rgbArr(1)), ToByte(rgbArr(2)))
 
-        For k = 1 To groupMembers(j).Count
+        For k = 1 To groupMembers(j).count
             Set swBody = groupMembers(j)(k)
 
             Dim applied As Boolean
@@ -520,7 +556,7 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
 
         If SHOW_DIAGNOSTICS Then
             Debug.Print "Group " & j & _
-                        "  bodies=" & groupMembers(j).Count & _
+                        "  bodies=" & groupMembers(j).count & _
                         "  faces=" & bodyFaces(groupRep(j)) & _
                         "  volume=" & Format(bodyVolume(groupRep(j)), "0.000000000") & _
                         "  hue=" & Format(groupHues(j), "0.0") & _
@@ -553,11 +589,27 @@ Sub ProcessPart(swModel As SldWorks.ModelDoc2)
     If Not swView Is Nothing Then swView.EnableGraphicsUpdate = True
     swModel.GraphicsRedraw2
 
+    ' --- Anything that will undo this on the next rebuild ---------------------
+    currentStep = "Checking pattern and mirror features"
+    Dim propagating As Long
+    propagating = CountPropagatingFeatures(swModel)
+
     Dim msg As String
     msg = "Applied unique colours to bodies in active display state" & vbCrLf & _
           "Total Bodies: " & totalBodies & vbCrLf & _
           "Unique Bodies: " & numGroups & vbCrLf & vbCrLf & _
           "Macro Version: " & MACRO_VERSION
+
+    If propagating > 0 Then
+        msg = msg & vbCrLf & vbCrLf & _
+              "Note: " & propagating & " pattern or mirror feature(s) have" & vbCrLf & _
+              "'Propagate visual properties' switched on. On the next" & vbCrLf & _
+              "rebuild they will copy their seed body's colour onto the" & vbCrLf & _
+              "bodies they create, overriding the colours applied here." & vbCrLf & vbCrLf & _
+              "Identical bodies already share a colour in this macro, so" & vbCrLf & _
+              "switching that option off costs nothing and keeps mirrored" & vbCrLf & _
+              "bodies distinct."
+    End If
 
     If SHOW_DIAGNOSTICS Then
         msg = msg & vbCrLf & vbCrLf & _
@@ -710,7 +762,7 @@ Sub ProcessAssembly(swModel As SldWorks.ModelDoc2)
         Dim colourValue As Long
         colourValue = RGB(ToByte(rgbArr(0)), ToByte(rgbArr(1)), ToByte(rgbArr(2)))
 
-        For k = 1 To groupMembers(j).Count
+        For k = 1 To groupMembers(j).count
             Set swComp = groupMembers(j)(k)
 
             Dim applied As Boolean
@@ -815,17 +867,17 @@ Function TransformIsReflection(ByVal swXform As SldWorks.MathTransform) As Boole
     TransformIsReflection = False
     If swXform Is Nothing Then Exit Function
 
-    Dim v As Variant
-    v = swXform.ArrayData
-    If Not IsArray(v) Then Exit Function
-    If UBound(v) < 8 Then Exit Function
+    Dim V As Variant
+    V = swXform.ArrayData
+    If Not IsArray(V) Then Exit Function
+    If UBound(V) < 8 Then Exit Function
 
     ' ArrayData holds the 3x3 rotation in elements 0 to 8, translation in 9 to 11
     ' and a scale factor in 12.
     Dim det As Double
-    det = CDbl(v(0)) * (CDbl(v(4)) * CDbl(v(8)) - CDbl(v(5)) * CDbl(v(7))) _
-        - CDbl(v(1)) * (CDbl(v(3)) * CDbl(v(8)) - CDbl(v(5)) * CDbl(v(6))) _
-        + CDbl(v(2)) * (CDbl(v(3)) * CDbl(v(7)) - CDbl(v(4)) * CDbl(v(6)))
+    det = CDbl(V(0)) * (CDbl(V(4)) * CDbl(V(8)) - CDbl(V(5)) * CDbl(V(7))) _
+        - CDbl(V(1)) * (CDbl(V(3)) * CDbl(V(8)) - CDbl(V(5)) * CDbl(V(6))) _
+        + CDbl(V(2)) * (CDbl(V(3)) * CDbl(V(7)) - CDbl(V(4)) * CDbl(V(6)))
 
     TransformIsReflection = (det < 0#)
     Exit Function
@@ -846,11 +898,11 @@ Function SimilarSize(ByVal volA As Double, ByVal volB As Double, _
 End Function
 
 ' Relative difference between two measurements, for diagnostics.
-Function RelDiff(ByVal a As Double, ByVal b As Double) As Double
-    If b = 0 Then
+Function RelDiff(ByVal a As Double, ByVal B As Double) As Double
+    If B = 0 Then
         RelDiff = 0
     Else
-        RelDiff = Abs(a - b) / Abs(b)
+        RelDiff = Abs(a - B) / Abs(B)
     End If
 End Function
 
@@ -1021,6 +1073,113 @@ Function InvariantsMatch(ByVal j1A As Double, ByVal j2A As Double, ByVal j3A As 
                       (Abs(j3A - j3B) <= t3)
 End Function
 
+'--- Features that undo this work ---------------------------------------------
+
+' Counts the pattern and mirror features that will copy their seed body's colour
+' onto the bodies they create the next time the model rebuilds.
+'
+' This is SOLIDWORKS behaviour and cannot be overridden from here: the copy is
+' written onto the derived body's FACES, and a face appearance beats the body
+' appearance this macro writes. Applying a colour again does not help, and nor
+' does applying one by hand - the rebuild overwrites both. The only cure is the
+' "Propagate visual properties" checkbox in the feature's own options, which is
+' the user's decision: for a pattern the instances are genuinely identical and
+' should share a colour, but for a mirror the two hands are different parts.
+'
+' Worth the count alone. Without it, a mirrored body silently reverting to its
+' original's colour after an unrelated rebuild is close to undiagnosable.
+Function CountPropagatingFeatures(ByVal swModel As SldWorks.ModelDoc2) As Long
+    On Error GoTo Failed
+
+    CountPropagatingFeatures = 0
+
+    Dim vFeats As Variant
+    vFeats = swModel.FeatureManager.GetFeatures(False)
+    If IsEmpty(vFeats) Then Exit Function
+
+    Dim i As Long
+    Dim swFeat As SldWorks.Feature
+    Dim total As Long
+    total = 0
+
+    For i = 0 To UBound(vFeats)
+        Set swFeat = vFeats(i)
+        If IsPatternOrMirror(swFeat.GetTypeName2()) Then
+            If FeaturePropagatesAppearance(swFeat) Then total = total + 1
+        End If
+    Next i
+
+    CountPropagatingFeatures = total
+    Exit Function
+
+Failed:
+    CountPropagatingFeatures = 0
+End Function
+
+' Matched on the type name containing "Pattern" or "Mirror" rather than against a
+' fixed list, so feature types not thought of here are still caught.
+Function IsPatternOrMirror(ByVal typeName As String) As Boolean
+    IsPatternOrMirror = (InStr(1, typeName, "Pattern", vbTextCompare) > 0) Or _
+                        (InStr(1, typeName, "Mirror", vbTextCompare) > 0)
+End Function
+
+' True when the feature's "Propagate visual properties" option is on.
+'
+' The property carrying that option is named differently across the pattern and
+' mirror feature data interfaces, so each known spelling is tried in turn and the
+' first that answers is used. CallByName keeps this a trapped runtime miss rather
+' than a compile error, which matters because the interfaces vary by feature type
+' and by SOLIDWORKS version.
+Function FeaturePropagatesAppearance(ByVal swFeat As SldWorks.Feature) As Boolean
+    On Error GoTo Failed
+
+    FeaturePropagatesAppearance = False
+
+    Dim oDef As Object
+    Set oDef = swFeat.GetDefinition()
+    If oDef Is Nothing Then Exit Function
+
+    Dim names As Variant
+    names = Array("VisualPropertiesPropagate", "PropagateVisualProperty", _
+                  "PropagateVisualProperties", "VisualProperties")
+
+    Dim i As Long
+    Dim answered As Boolean
+    Dim value As Boolean
+
+    For i = LBound(names) To UBound(names)
+        value = ReadBoolProperty(oDef, CStr(names(i)), answered)
+        If answered Then
+            FeaturePropagatesAppearance = value
+            Exit Function
+        End If
+    Next i
+    Exit Function
+
+Failed:
+    FeaturePropagatesAppearance = False
+End Function
+
+' Reads a boolean property by name, reporting whether the property existed at all
+' so that "not present" is not mistaken for "present and false".
+Function ReadBoolProperty(ByVal obj As Object, ByVal propName As String, _
+                          ByRef answered As Boolean) As Boolean
+    answered = False
+    ReadBoolProperty = False
+
+    On Error GoTo Failed
+    Dim V As Variant
+    V = CallByName(obj, propName, VbGet)
+    If IsEmpty(V) Or IsNull(V) Then Exit Function
+
+    ReadBoolProperty = CBool(V)
+    answered = True
+    Exit Function
+
+Failed:
+    answered = False
+End Function
+
 '--- Palette ------------------------------------------------------------------
 
 ' Spreads groups evenly around the hue wheel, in layers of differing brightness
@@ -1137,15 +1296,15 @@ Function HueClashes(ByVal hue As Double, hues() As Double, ByVal count As Long, 
 End Function
 
 Function WrapHue(ByVal hue As Double) As Double
-    Dim h As Double
-    h = hue
-    Do While h >= 360#
-        h = h - 360#
+    Dim H As Double
+    H = hue
+    Do While H >= 360#
+        H = H - 360#
     Loop
-    Do While h < 0#
-        h = h + 360#
+    Do While H < 0#
+        H = H + 360#
     Loop
-    WrapHue = h
+    WrapHue = H
 End Function
 
 ' Builds a colour of a given hue at a specific perceived brightness.
@@ -1299,11 +1458,11 @@ Function BuildMaterialArray(ByVal rgbArr As Variant) As Variant
 End Function
 
 Function ToByte(ByVal value As Double) As Long
-    Dim v As Long
-    v = Int(value * 255# + 0.5)
-    If v < 0 Then v = 0
-    If v > 255 Then v = 255
-    ToByte = v
+    Dim V As Long
+    V = Int(value * 255# + 0.5)
+    If V < 0 Then V = 0
+    If V > 255 Then V = 255
+    ToByte = V
 End Function
 
 '--- Colour space -------------------------------------------------------------
