@@ -33,15 +33,16 @@
 '
 ' To use, open a part or assembly document and run the macro.
 '
-'   Version   0.11.2
-'   Date      2026-08-13
+'   Version   0.11.3
+'   Date      2026-08-20
 '   Author    James Debono
 '   Licence   MIT - full text below
-'   Source    https://github.com/james-debono/solidworks-apply-colours
+'   Source    https://github.com/james-debono/apply-colours-sw-macro
 '
 '------------------------------------------------------------------------------
 ' CHANGELOG (summary - see CHANGELOG.md for the full history)
 '
+'   0.11.3  Source URL updated for the repository rename.
 '   0.11.2  Version reported on completion corrected.
 '   0.11.1  Licence and header.
 '   0.10.x  Direct colour writing measured and rejected: sixty times faster,
@@ -154,7 +155,7 @@ Const SHAPE_TOLERANCE As Double = 0.000001
 
 ' Must match the Version line in the header block above. build-library.ps1 checks
 ' that they agree and fails the build if they drift.
-Const MACRO_VERSION As String = "0.11.2"
+Const MACRO_VERSION As String = "0.11.3"
 
 ' Perceived brightness of each colour layer, darkest usable to lightest.
 ' Values are relative luminance, 0 = black, 1 = white.
